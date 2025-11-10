@@ -3,224 +3,224 @@
  *                              GO3D.CC
  * ============================================================================
  * 
- * Programme de rendu 3D pour Apple IIGS avec ORCA/C
+ * 3D rendering program for Apple IIGS with ORCA/C
  * 
  * DESCRIPTION:
- *   Ce programme lit des fichiers de modeles 3D au format OBJ simplifie,
- *   applique des transformations geometriques 3D (rotation, translation),
- *   projette les points sur un ecran 2D, et dessine les polygones resultants
- *   en utilisant QuickDraw.
+ *   This program reads 3D model files in simplified OBJ format,
+ *   applies 3D geometric transformations (rotation, translation),
+ *   projects the points on a 2D screen, and draws the resulting polygons
+ *   using QuickDraw.
  * 
- * FONCTIONNALITES:
- *   - Lecture de fichiers OBJ (vertices "v" et faces "f")
- *   - Transformations 3D vers systeme observateur
- *   - Projection perspective sur ecran 2D
- *   - Rendu graphique avec QuickDraw
- *   - Interface interactive pour modifier les parametres
+ * FEATURES:
+ *   - Reading OBJ files (vertices "v" and faces "f")
+ *   - 3D transformations to viewer system
+ *   - Perspective projection on 2D screen
+ *   - Graphic rendering with QuickDraw
+ *   - Interactive interface to modify parameters
  * 
- * AUTEUR: Bruno
+ * AUTHOR: Bruno
  * DATE: 2025
- * PLATEFORME: Apple IIGS - ORCA/C
+ * PLATFORM: Apple IIGS - ORCA/C
  * ============================================================================
  */
 
 // ============================================================================
-//                           INCLUSIONS D'EN-TETES
+//                           HEADER INCLUDES
 // ============================================================================
 
-#include <stdio.h>      // Entrees/sorties standard (printf, fgets, etc.)
-#include <asm.h>        // Fonctions assembleur specifiques ORCA
-#include <string.h>     // Manipulation de chaines (strlen, strcmp, etc.)
-#include <misctool.h>   // Outils divers ORCA (GetTick, keypress, etc.)
-#include <stdlib.h>     // Fonctions standard (malloc, free, atof, etc.)
-#include <math.h>       // Fonctions mathematiques (cos, sin, sqrt, etc.)
-#include <quickdraw.h>  // API graphique QuickDraw d'Apple IIGS
-#include <event.h>      // Gestion des evenements systeme
-#include <memory.h>     // Gestion memoire avancee (NewHandle, etc.)
-#include <window.h>     // Gestion des fenetres
-#include <orca.h>       // Fonctions specifiques ORCA (startgraph, etc.)
+#include <stdio.h>      // Standard input/output (printf, fgets, etc.)
+#include <asm.h>        // ORCA specific assembler functions
+#include <string.h>     // String manipulation (strlen, strcmp, etc.)
+#include <misctool.h>   // ORCA misc tools (GetTick, keypress, etc.)
+#include <stdlib.h>     // Standard functions (malloc, free, atof, etc.)
+#include <math.h>       // Math functions (cos, sin, sqrt, etc.)
+#include <quickdraw.h>  // Apple IIGS QuickDraw graphics API
+#include <event.h>      // System event management
+#include <memory.h>     // Advanced memory management (NewHandle, etc.)
+#include <window.h>     // Window management
+#include <orca.h>       // ORCA specific functions (startgraph, etc.)
 
 // ============================================================================
-//                            CONSTANTES GLOBALES
+//                            GLOBAL CONSTANTS
 // ============================================================================
 
-// Configuration des performances et debug
-#define ENABLE_DEBUG_SAVE 0     // 1 = Active sauvegarde debug (LENT!), 0 = Desactive
-#define PERFORMANCE_MODE 1      // 1 = Mode performance optimise, 0 = Mode debug
+// Performance and debug configuration
+#define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
+#define PERFORMANCE_MODE 1      // 1 = Optimized performance mode, 0 = Debug mode
 
-#define MAX_LINE_LENGTH 256     // Taille maximale d'une ligne de fichier
-#define MAX_VERTICES 1000       // Nombre maximum de vertices dans un modele 3D
-#define MAX_FACES 1000          // Nombre maximum de faces dans un modele 3D
-#define MAX_FACE_VERTICES 20    // Nombre maximum de vertices par face (polygone)
-#define PI 3.14159265359        // Constante mathematique Pi
-#define CENTRE_X 160            // Centre de l'ecran en X (320/2)
-#define CENTRE_Y 100            // Centre de l'ecran en Y (200/2)
-//#define mode 640               // Mode graphique 640x200 pixels
-#define mode 320               // Mode graphique 320x200 pixels
+#define MAX_LINE_LENGTH 256     // Maximum file line size
+#define MAX_VERTICES 1000       // Maximum vertices in a 3D model
+#define MAX_FACES 1000          // Maximum faces in a 3D model
+#define MAX_FACE_VERTICES 20    // Maximum vertices per face (polygon)
+#define PI 3.14159265359        // Mathematical constant Pi
+#define CENTRE_X 160            // Screen center in X (320/2)
+#define CENTRE_Y 100            // Screen center in Y (200/2)
+//#define mode 640               // Graphics mode 640x200 pixels
+#define mode 320               // Graphics mode 320x200 pixels
 
-// OPTIMISATION: Mode performance - desactiver les printf
-#define PERFORMANCE_MODE 1      // 1 = pas de printf, 0 = printf normal
+// OPTIMIZATION: Performance mode - disable printf
+#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
 
 // ============================================================================
-//                          STRUCTURES DE DONNEES
+//                          DATA STRUCTURES
 // ============================================================================
 
 /**
  * Structure Vertex3D
  * 
  * DESCRIPTION:
- *   Represente un point dans l'espace 3D avec ses differentes representations
- *   au cours du pipeline de rendu 3D.
+ *   Represents a point in 3D space with its different representations
+ *   throughout the 3D rendering pipeline.
  * 
- * CHAMPS:
- *   x, y, z    : Coordonnees originales lues depuis le fichier OBJ
- *   xo, yo, zo : Coordonnees transformees dans le systeme observateur
- *                (apres application des rotations et translation)
- *   x2d, y2d   : Coordonnees finales projetees sur l'ecran 2D
+ * FIELDS:
+ *   x, y, z    : Original coordinates read from OBJ file
+ *   xo, yo, zo : Transformed coordinates in the observer system
+ *                (after applying rotations and translation)
+ *   x2d, y2d   : Final projected coordinates on 2D screen
  * 
- * UTILISATION:
- *   Cette structure preserve toutes les etapes de transformation pour
- *   permettre le debug et les recalculs sans relecture du fichier.
+ * USAGE:
+ *   This structure preserves all transformation steps to
+ *   allow debugging and recalculations without rereading the file.
  */
 typedef struct {
-    Extended x, y, z;       // Coordonnees originales du fichier OBJ (SANE)
-    Extended xo, yo, zo;    // Coordonnees transformees (systeme observateur)
-    int x2d, y2d;           // Coordonnees projetees sur l'ecran 2D (pixels)
+    Extended x, y, z;       // Original coordinates from OBJ file (SANE)
+    Extended xo, yo, zo;    // Transformed coordinates (observer system)
+    int x2d, y2d;           // Projected coordinates on 2D screen (pixels)
 } Vertex3D;
 
 /**
  * Structure Face3D
  * 
  * DESCRIPTION:
- *   Represente une face (polygone) d'un objet 3D. Une face est definie
- *   par une liste d'indices pointant vers des vertices dans le tableau
- *   de vertices du modele.
+ *   Represents a face (polygon) of a 3D object. A face is defined
+ *   by a list of indices pointing to vertices in the model's
+ *   vertex array.
  * 
- * CHAMPS:
- *   vertex_count    : Nombre de vertices composant cette face (3+ pour polygone)
- *   vertex_indices  : Tableau des indices des vertices (numerotation base 1
- *                     comme dans le format OBJ standard)
+ * FIELDS:
+ *   vertex_count    : Number of vertices composing this face (3+ for polygon)
+ *   vertex_indices  : Array of vertex indices (1-based numbering
+ *                     as in the standard OBJ format)
  * 
  * NOTES:
- *   - Les indices sont stockes en base 1 (premier vertex = indice 1)
- *   - Conversion en base 0 necessaire pour acceder au tableau C
- *   - Maximum MAX_FACE_VERTICES vertices par face pour eviter les debordements
+ *   - Indices are stored in base 1 (first vertex = index 1)
+ *   - Conversion to base 0 needed to access the C array
+ *   - Maximum MAX_FACE_VERTICES vertices per face to prevent overflow
  */
 typedef struct {
-    int vertex_count;                           // Nombre de vertices dans la face
-    int vertex_indices[MAX_FACE_VERTICES];     // Indices des vertices (base 1)
-    Extended z_max;                            // Profondeur maximale de la face (pour tri, SANE)
+    int vertex_count;                           // Number of vertices in the face
+    int vertex_indices[MAX_FACE_VERTICES];     // Vertex indices (base 1)
+    Extended z_max;                            // Maximum depth of the face (for sorting, SANE)
 } Face3D;
 
 /**
  * Structure DynamicPolygon
  * 
  * DESCRIPTION:
- *   Structure compatible avec QuickDraw pour dessiner des polygones.
- *   Cette structure doit etre allouee dynamiquement car sa taille
- *   varie selon le nombre de points du polygone.
+ *   Structure compatible with QuickDraw for drawing polygons.
+ *   This structure must be dynamically allocated because its size
+ *   varies according to the number of points in the polygon.
  * 
- * CHAMPS:
- *   polySize    : Taille totale de la structure en octets
- *   polyBBox    : Rectangle englobant le polygone (bounding box)
- *   polyPoints  : Tableau des points du polygone en coordonnees ecran
+ * FIELDS:
+ *   polySize    : Total size of the structure in bytes
+ *   polyBBox    : Polygon bounding box rectangle
+ *   polyPoints  : Array of polygon points in screen coordinates
  * 
- * FORMAT QUICKDRAW:
- *   QuickDraw attend une structure avec en-tete (taille + bbox) suivi
- *   des points. La taille doit inclure l'en-tete + tous les points.
+ * QUICKDRAW FORMAT:
+ *   QuickDraw expects a structure with header (size + bbox) followed
+ *   by points. The size must include the header + all points.
  */
 typedef struct {
-    int polySize;                               // Taille totale structure (octets)
-    Rect polyBBox;                             // Rectangle englobant (bounding box)
-    Point polyPoints[MAX_FACE_VERTICES];       // Points du polygone (coordonnees ecran)
+    int polySize;                               // Total structure size (bytes)
+    Rect polyBBox;                             // Bounding box rectangle
+    Point polyPoints[MAX_FACE_VERTICES];       // Polygon points (screen coordinates)
 } DynamicPolygon;
 
 /**
  * Structure ObserverParams
  * 
  * DESCRIPTION:
- *   Contient tous les parametres definissant la position et orientation
- *   de l'observateur (camera) dans l'espace 3D, ainsi que les parametres
- *   de projection.
+ *   Contains all parameters defining the position and orientation
+ *   of the observer (camera) in 3D space, as well as projection
+ *   parameters.
  * 
- * CHAMPS:
- *   angle_h  : Angle horizontal de rotation de l'observateur (degres)
- *              Rotation autour de l'axe Y (gauche/droite)
- *   angle_v  : Angle vertical de rotation de l'observateur (degres)
- *              Rotation autour de l'axe X (haut/bas)
- *   angle_w  : Angle de rotation de la projection ecran (degres)
- *              Rotation dans le plan 2D final
- *   distance : Distance de l'observateur au centre du modele
- *              Plus grande = objet plus petit, plus petite = objet plus grand
+ * FIELDS:
+ *   angle_h  : Horizontal rotation angle of the observer (degrees)
+ *              Rotation around Y-axis (left/right)
+ *   angle_v  : Vertical rotation angle of the observer (degrees)
+ *              Rotation around X-axis (up/down)
+ *   angle_w  : Screen projection rotation angle (degrees)
+ *              Rotation in the final 2D plane
+ *   distance : Distance from observer to model center
+ *              Larger = smaller object, smaller = larger object
  * 
- * NOTES MATHEMATIQUES:
- *   - Les angles sont en degres (convertis en radians pour les calculs)
- *   - La distance affecte la perspective et la taille apparente
- *   - angle_w permet une rotation finale pour ajuster l'orientation
+ * MATHEMATICAL NOTES:
+ *   - Angles are in degrees (converted to radians for calculations)
+ *   - Distance affects perspective and apparent size
+ *   - angle_w allows final rotation to adjust orientation
  */
 typedef struct {
-    Extended angle_h;   // Angle horizontal de l'observateur (rotation Y, SANE)
-    Extended angle_v;   // Angle vertical de l'observateur (rotation X, SANE) 
-    Extended angle_w;   // Angle de rotation de la projection 2D (SANE)
-    Extended distance;  // Distance observateur-objet (perspective, SANE)
+    Extended angle_h;   // Observer horizontal angle (Y rotation, SANE)
+    Extended angle_v;   // Observer vertical angle (X rotation, SANE) 
+    Extended angle_w;   // 2D projection rotation angle (SANE)
+    Extended distance;  // Observer-object distance (perspective, SANE)
 } ObserverParams;
 
 /**
  * Structure Model3D
  * 
  * DESCRIPTION:
- *   Structure principale contenant toutes les donnees d'un modele 3D.
- *   Elle regroupe les vertices, les faces, et les compteurs associes.
+ *   Main structure containing all data of a 3D model.
+ *   It groups vertices, faces, and associated counters.
  * 
- * CHAMPS:
- *   vertices      : Pointeur vers tableau dynamique de vertices
- *   faces         : Pointeur vers tableau dynamique de faces
- *   vertex_count  : Nombre reel de vertices charges
- *   face_count    : Nombre reel de faces chargees
+ * FIELDS:
+ *   vertices      : Pointer to dynamic vertex array
+ *   faces         : Pointer to dynamic face array
+ *   vertex_count  : Actual number of loaded vertices
+ *   face_count    : Actual number of loaded faces
  * 
- * GESTION MEMOIRE:
- *   - Les tableaux sont alloues dynamiquement (malloc)
- *   - Permet de depasser les limites de la pile Apple IIGS
- *   - Liberation obligatoire avec destroyModel3D()
+ * MEMORY MANAGEMENT:
+ *   - Arrays are dynamically allocated (malloc)
+ *   - Allows exceeding Apple IIGS stack limits
+ *   - Mandatory cleanup with destroyModel3D()
  * 
- * UTILISATION:
+ * USAGE:
  *   Model3D* model = createModel3D();
- *   loadModel3D(model, "fichier.obj");
- *   // ... utilisation ...
+ *   loadModel3D(model, "file.obj");
+ *   // ... usage ...
  *   destroyModel3D(model);
  */
 typedef struct {
-    Vertex3D *vertices;     // Tableau dynamique des vertices du modele
-    Face3D *faces;          // Tableau dynamique des faces du modele
-    int vertex_count;       // Nombre reel de vertices charges
-    int face_count;         // Nombre reel de faces chargees
+    Vertex3D *vertices;     // Dynamic vertex array of the model
+    Face3D *faces;          // Dynamic face array of the model
+    int vertex_count;       // Actual number of loaded vertices
+    int face_count;         // Actual number of loaded faces
 } Model3D;
 
 // ============================================================================
-//                       DECLARATIONS DES FONCTIONS
+//                       FUNCTION DECLARATIONS
 // ============================================================================
 
 /**
- * FONCTIONS DE LECTURE DE FICHIERS OBJ
- * ====================================
+ * OBJ FILE READING FUNCTIONS
+ * ===========================
  */
 
 /**
  * readVertices
  * 
  * DESCRIPTION:
- *   Lit les vertices (points 3D) depuis un fichier au format OBJ.
- *   Recherche les lignes commencant par "v " et extrait les coordonnees X,Y,Z.
+ *   Reads vertices (3D points) from an OBJ format file.
+ *   Searches for lines starting with "v " and extracts X,Y,Z coordinates.
  * 
- * PARAMETRES:
- *   filename     : Nom du fichier OBJ a lire
- *   vertices     : Tableau de destination pour stocker les vertices
- *   max_vertices : Taille maximale du tableau (protection debordement)
+ * PARAMETERS:
+ *   filename     : OBJ filename to read
+ *   vertices     : Destination array to store vertices
+ *   max_vertices : Maximum array size (overflow protection)
  * 
- * RETOUR:
- *   Nombre de vertices lus avec succes, ou -1 en cas d'erreur
+ * RETURN:
+ *   Number of successfully read vertices, or -1 on error
  * 
- * FORMAT OBJ:
+ * OBJ FORMAT:
  *   v 1.234 5.678 9.012
  *   v -2.5 0.0 3.14
  */
@@ -230,54 +230,54 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices);
  * readFaces
  * 
  * DESCRIPTION:
- *   Lit les faces (polygones) depuis un fichier au format OBJ.
- *   Recherche les lignes commencant par "f " et extrait les indices des vertices.
+ *   Reads faces (polygons) from an OBJ format file.
+ *   Searches for lines starting with "f " and extracts vertex indices.
  * 
- * PARAMETRES:
- *   filename   : Nom du fichier OBJ a lire
- *   faces      : Tableau de destination pour stocker les faces
- *   max_faces  : Taille maximale du tableau (protection debordement)
+ * PARAMETERS:
+ *   filename   : OBJ filename to read
+ *   faces      : Destination array to store faces
+ *   max_faces  : Maximum array size (overflow protection)
  * 
- * RETOUR:
- *   Nombre de faces lues avec succes, ou -1 en cas d'erreur
+ * RETURN:
+ *   Number of successfully read faces, or -1 on error
  * 
- * FORMAT OBJ:
- *   f 1 2 3        (triangle avec vertices 1, 2, 3)
- *   f 4 5 6 7      (quadrilatere avec vertices 4, 5, 6, 7)
+ * OBJ FORMAT:
+ *   f 1 2 3        (triangle with vertices 1, 2, 3)
+ *   f 4 5 6 7      (quadrilateral with vertices 4, 5, 6, 7)
  */
 int readFaces(const char* filename, Face3D* faces, int max_faces);
 
 /**
- * FONCTIONS DE TRANSFORMATION GEOMETRIQUE 3D
- * ==========================================
+ * 3D GEOMETRIC TRANSFORMATION FUNCTIONS
+ * =====================================
  */
 
 /**
  * transformToObserver
  * 
  * DESCRIPTION:
- *   Applique les transformations geometriques 3D pour passer du systeme
- *   de coordonnees du modele au systeme de coordonnees de l'observateur.
+ *   Applies 3D geometric transformations to go from the model's
+ *   coordinate system to the observer's coordinate system.
  *   
- *   TRANSFORMATIONS APPLIQUEES:
- *   1. Rotation horizontale (angle_h) autour de l'axe Y
- *   2. Rotation verticale (angle_v) autour de l'axe X
- *   3. Translation par la distance d'observation
+ *   APPLIED TRANSFORMATIONS:
+ *   1. Horizontal rotation (angle_h) around Y-axis
+ *   2. Vertical rotation (angle_v) around X-axis
+ *   3. Translation by observation distance
  * 
- * PARAMETRES:
- *   vertices     : Tableau des vertices a transformer
- *   vertex_count : Nombre de vertices dans le tableau
- *   angle_h      : Angle de rotation horizontale (degres)
- *   angle_v      : Angle de rotation verticale (degres)
- *   distance     : Distance d'observation (translation en Z)
+ * PARAMETERS:
+ *   vertices     : Array of vertices to transform
+ *   vertex_count : Number of vertices in the array
+ *   angle_h      : Horizontal rotation angle (degrees)
+ *   angle_v      : Vertical rotation angle (degrees)
+ *   distance     : Observation distance (Z translation)
  * 
- * FORMULES MATHEMATIQUES:
+ * MATHEMATICAL FORMULAS:
  *   zo = -x*(cos_h*cos_v) - y*(sin_h*cos_v) - z*sin_v + distance
  *   xo = -x*sin_h + y*cos_h
  *   yo = -x*(cos_h*sin_v) - y*(sin_h*sin_v) + z*cos_v
  * 
- * COORDONNEES RESULTANTES:
- *   Les champs xo, yo, zo des vertices sont mis a jour.
+ * RESULTING COORDINATES:
+ *   The xo, yo, zo fields of the vertices are updated.
  */
 void transformToObserver(Vertex3D* vertices, int vertex_count, 
                         Extended angle_h, Extended angle_v, Extended distance);
@@ -286,60 +286,60 @@ void transformToObserver(Vertex3D* vertices, int vertex_count,
  * projectTo2D
  * 
  * DESCRIPTION:
- *   Projette les coordonnees 3D transformees sur un ecran 2D en utilisant
- *   une projection perspective. Applique egalement une rotation finale
- *   dans le plan 2D.
+ *   Projects the transformed 3D coordinates onto a 2D screen using
+ *   perspective projection. Also applies a final rotation
+ *   in the 2D plane.
  * 
- * PARAMETRES:
- *   vertices     : Tableau des vertices a projeter
- *   vertex_count : Nombre de vertices dans le tableau
- *   angle_w      : Angle de rotation dans le plan 2D (degres)
+ * PARAMETERS:
+ *   vertices     : Array of vertices to project
+ *   vertex_count : Number of vertices in the array
+ *   angle_w      : Rotation angle in the 2D plane (degrees)
  * 
- * ALGORITHME:
- *   1. Projection perspective: x2d = (xo * echelle) / zo + centre_x
- *   2. Idem pour y2d avec inversion de l'axe Y
- *   3. Rotation finale dans le plan 2D selon angle_w
- *   4. Points derriere l'observateur (zo <= 0) marques invisibles
+ * ALGORITHM:
+ *   1. Perspective projection: x2d = (xo * scale) / zo + center_x
+ *   2. Same for y2d with Y-axis inversion
+ *   3. Final rotation in the 2D plane according to angle_w
+ *   4. Points behind observer (zo <= 0) marked invisible
  * 
- * COORDONNEES RESULTANTES:
- *   Les champs x2d, y2d des vertices contiennent les coordonnees ecran finales.
+ * RESULTING COORDINATES:
+ *   The x2d, y2d fields of the vertices contain the final screen coordinates.
  */
 void projectTo2D(Vertex3D* vertices, int vertex_count, Extended angle_w);
 
 /**
- * FONCTIONS DE RENDU GRAPHIQUE
- * ============================
+ * GRAPHIC RENDERING FUNCTIONS
+ * ===========================
  */
 
 /**
  * drawPolygons
  * 
  * DESCRIPTION:
- *   Dessine tous les polygones (faces) du modele 3D a l'ecran en utilisant
- *   l'API QuickDraw d'Apple IIGS. Chaque face est rendue avec une couleur
- *   differente pour la visualisation.
+ *   Draws all polygons (faces) of the 3D model on screen using
+ *   Apple IIGS QuickDraw API. Each face is rendered with a different
+ *   color for visualization.
  * 
- * PARAMETRES:
- *   vertices   : Tableau des vertices avec coordonnees 2D calculees
- *   faces      : Tableau des faces a dessiner
- *   face_count : Nombre de faces dans le tableau
+ * PARAMETERS:
+ *   vertices   : Array of vertices with calculated 2D coordinates
+ *   faces      : Array of faces to draw
+ *   face_count : Number of faces in the array
  * 
- * ALGORITHME:
- *   1. Initialisation du mode graphique QuickDraw
- *   2. Pour chaque face:
- *      - Verification visibilite des vertices
- *      - Creation structure polygon QuickDraw
- *      - Calcul bounding box
- *      - Allocation memoire dynamique
- *      - Dessin avec PaintPoly()
- *      - Liberation memoire
+ * ALGORITHM:
+ *   1. QuickDraw graphics mode initialization
+ *   2. For each face:
+ *      - Check vertex visibility
+ *      - Create QuickDraw polygon structure
+ *      - Calculate bounding box
+ *      - Dynamic memory allocation
+ *      - Drawing with PaintPoly()
+ *      - Memory cleanup
  * 
- * GESTION COULEURS:
- *   Couleurs cycliques basees sur l'index de la face (i % 15 + 1)
+ * COLOR MANAGEMENT:
+ *   Cyclic colors based on face index (i % 15 + 1)
  * 
- * OPTIMISATIONS:
- *   - Faces avec moins de 3 vertices visibles ignorees
- *   - Vertices hors ecran geres correctement
+ * OPTIMIZATIONS:
+ *   - Faces with less than 3 visible vertices ignored
+ *   - Off-screen vertices handled correctly
  */
 void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_count);
 void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count);
@@ -349,50 +349,50 @@ void sortFacesByDepth_quicksort(Face3D* faces, int low, int high);
 void sortFacesByDepth_insertion_range(Face3D* faces, int low, int high);
 int partition_median3(Face3D* faces, int low, int high);
 
-// Fonction pour sauvegarder les donnees de debug sur disque
+// Function to save debug data to disk
 void saveDebugData(Model3D* model, const char* debug_filename);
 
 /**
- * FONCTIONS UTILITAIRES
- * =====================
+ * UTILITY FUNCTIONS
+ * ==================
  */
 
 /**
  * delay
  * 
  * DESCRIPTION:
- *   Attendre un nombre specifique de secondes en utilisant le timer
- *   systeme Apple IIGS.
+ *   Wait a specific number of seconds using the Apple IIGS
+ *   system timer.
  * 
- * PARAMETRES:
- *   seconds : Nombre de secondes a attendre
+ * PARAMETERS:
+ *   seconds : Number of seconds to wait
  * 
  * IMPLEMENTATION:
- *   Utilise GetTick() qui retourne le nombre de ticks depuis le demarrage
- *   (60 ticks par seconde sur Apple IIGS).
+ *   Uses GetTick() which returns the number of ticks since startup
+ *   (60 ticks per second on Apple IIGS).
  */
 void delay(int seconds);
 
 /**
- * FONCTIONS DE GESTION DU MODELE 3D
- * =================================
+ * 3D MODEL MANAGEMENT FUNCTIONS
+ * ==============================
  */
 
 /**
  * createModel3D
  * 
  * DESCRIPTION:
- *   Cree et initialise une nouvelle structure Model3D avec allocation
- *   dynamique des tableaux de vertices et faces.
+ *   Creates and initializes a new Model3D structure with dynamic
+ *   allocation of vertex and face arrays.
  * 
- * RETOUR:
- *   Pointeur vers la nouvelle structure, ou NULL en cas d'erreur memoire
+ * RETURN:
+ *   Pointer to the new structure, or NULL on memory error
  * 
- * GESTION MEMOIRE:
- *   - Allocation de la structure principale
- *   - Allocation du tableau de vertices (MAX_VERTICES)
- *   - Allocation du tableau de faces (MAX_FACES)
- *   - Cleanup automatique en cas d'echec partiel
+ * MEMORY MANAGEMENT:
+ *   - Main structure allocation
+ *   - Vertex array allocation (MAX_VERTICES)
+ *   - Face array allocation (MAX_FACES)
+ *   - Automatic cleanup on partial failure
  */
 Model3D* createModel3D(void);
 
@@ -400,15 +400,15 @@ Model3D* createModel3D(void);
  * destroyModel3D
  * 
  * DESCRIPTION:
- *   Libere toute la memoire associee a un modele 3D.
+ *   Frees all memory associated with a 3D model.
  * 
- * PARAMETRES:
- *   model : Pointeur vers le modele a detruire (peut etre NULL)
+ * PARAMETERS:
+ *   model : Pointer to the model to destroy (can be NULL)
  * 
- * LIBERATION:
- *   - Tableau des vertices
- *   - Tableau des faces  
- *   - Structure principale
+ * CLEANUP:
+ *   - Vertex array
+ *   - Face array  
+ *   - Main structure
  */
 void destroyModel3D(Model3D* model);
 
@@ -416,44 +416,44 @@ void destroyModel3D(Model3D* model);
  * loadModel3D
  * 
  * DESCRIPTION:
- *   Charge un modele 3D complet depuis un fichier OBJ.
- *   Combine la lecture des vertices et des faces.
+ *   Loads a complete 3D model from an OBJ file.
+ *   Combines reading vertices and faces.
  * 
- * PARAMETRES:
- *   model    : Structure Model3D de destination
- *   filename : Nom du fichier OBJ a charger
+ * PARAMETERS:
+ *   model    : Destination Model3D structure
+ *   filename : OBJ filename to load
  * 
- * RETOUR:
- *   0 en cas de succes, -1 en cas d'erreur
+ * RETURN:
+ *   0 on success, -1 on error
  * 
- * TRAITEMENT:
- *   - Lecture des vertices avec readVertices()
- *   - Lecture des faces avec readFaces()
- *   - Mise a jour des compteurs dans la structure
+ * PROCESSING:
+ *   - Read vertices with readVertices()
+ *   - Read faces with readFaces()
+ *   - Update counters in the structure
  */
 int loadModel3D(Model3D* model, const char* filename);
 
 /**
- * FONCTIONS D'INTERFACE UTILISATEUR
- * =================================
+ * USER INTERFACE FUNCTIONS
+ * =========================
  */
 
 /**
  * getObserverParams
  * 
  * DESCRIPTION:
- *   Interface utilisateur pour saisir les parametres de l'observateur
+ *   User interface for entering observer parameters
  *   (angles, distance, etc.).
  * 
- * PARAMETRES:
- *   params : Structure de destination pour les parametres
+ * PARAMETERS:
+ *   params : Destination structure for parameters
  * 
  * INTERFACE:
- *   Demande interactive a l'utilisateur:
- *   - Angle horizontal
- *   - Angle vertical  
- *   - Distance d'observation
- *   - Angle de rotation ecran
+ *   Interactive prompts to user:
+ *   - Horizontal angle
+ *   - Vertical angle  
+ *   - Observation distance
+ *   - Screen rotation angle
  */
 void getObserverParams(ObserverParams* params);
 
@@ -461,11 +461,11 @@ void getObserverParams(ObserverParams* params);
  * displayModelInfo
  * 
  * DESCRIPTION:
- *   Affiche les informations generales sur le modele charge
- *   (nombre de vertices, nombre de faces).
+ *   Displays general information about the loaded model
+ *   (number of vertices, number of faces).
  * 
- * PARAMETRES:
- *   model : Modele dont afficher les informations
+ * PARAMETERS:
+ *   model : Model whose information to display
  */
 void displayModelInfo(Model3D* model);
 
@@ -473,12 +473,12 @@ void displayModelInfo(Model3D* model);
  * displayResults
  * 
  * DESCRIPTION:
- *   Affiche les resultats detailles du pipeline de rendu:
- *   coordonnees originales, transformees, et projetees.
- *   Lance egalement le rendu graphique.
+ *   Displays detailed results of the rendering pipeline:
+ *   original, transformed, and projected coordinates.
+ *   Also launches graphic rendering.
  * 
- * PARAMETRES:
- *   model : Modele dont afficher les resultats
+ * PARAMETERS:
+ *   model : Model whose results to display
  */
 void displayResults(Model3D* model);
 
@@ -486,392 +486,391 @@ void displayResults(Model3D* model);
  * processModel
  * 
  * DESCRIPTION:
- *   Execute le pipeline complet de transformation 3D sur un modele:
- *   transformation vers observateur puis projection 2D.
+ *   Executes the complete 3D transformation pipeline on a model:
+ *   transformation to observer then 2D projection.
  * 
- * PARAMETRES:
- *   model  : Modele a traiter
- *   params : Parametres de transformation
+ * PARAMETERS:
+ *   model  : Model to process
+ *   params : Transformation parameters
  */
 void processModelFast(Model3D* model, ObserverParams* params);
 
 // ============================================================================
-//                          IMPLEMENTATIONS DES FONCTIONS
+//                          FUNCTION IMPLEMENTATIONS
 // ============================================================================
 
 /**
- * FONCTION UTILITAIRE: delay
- * ==========================
+ * UTILITY FUNCTION: delay
+ * ========================
  * 
- * Cette fonction utilise le timer systeme Apple IIGS pour implementer
- * une attente precise. GetTick() retourne le nombre de ticks ecoules
- * depuis le demarrage du systeme (60 Hz sur Apple IIGS).
+ * This function uses the Apple IIGS system timer to implement
+ * precise waiting. GetTick() returns the number of ticks elapsed
+ * since system startup (60 Hz on Apple IIGS).
  */
 void delay(int seconds) {
-    long startTick = GetTick();               // Temps de debut (en ticks)
-    long ticksToWait = seconds * 60;          // Conversion: 60 ticks/seconde
+    long startTick = GetTick();               // Start time (in ticks)
+    long ticksToWait = seconds * 60;          // Conversion: 60 ticks/second
     
-    // Boucle d'attente active jusqu'a ecoulement du delai
+    // Active wait loop until delay elapsed
     while (GetTick() - startTick < ticksToWait) {
-        // Attente passive - le processeur reste disponible pour le systeme
+        // Passive wait - processor remains available for system
     }
 }
 
 // ============================================================================
-//                    FONCTIONS DE GESTION DU MODELE 3D
+//                    3D MODEL MANAGEMENT FUNCTIONS
 // ============================================================================
 
 /**
- * CREATION D'UN NOUVEAU MODELE 3D
- * ===============================
+ * CREATING A NEW 3D MODEL
+ * ========================
  * 
- * Cette fonction alloue dynamiquement toutes les structures necessaires
- * pour un modele 3D. L'allocation dynamique est cruciale sur Apple IIGS
- * car la pile est limitee et ne peut pas contenir de gros tableaux.
+ * This function dynamically allocates all structures necessary
+ * for a 3D model. Dynamic allocation is crucial on Apple IIGS
+ * because the stack is limited and cannot contain large arrays.
  * 
- * STRATEGIE D'ALLOCATION:
- * 1. Allocation de la structure principale Model3D
- * 2. Allocation du tableau de vertices (MAX_VERTICES elements)
- * 3. Allocation du tableau de faces (MAX_FACES elements)
- * 4. En cas d'echec: liberation des allocations precedentes (cleanup)
+ * ALLOCATION STRATEGY:
+ * 1. Main Model3D structure allocation
+ * 2. Vertex array allocation (MAX_VERTICES elements)
+ * 3. Face array allocation (MAX_FACES elements)
+ * 4. On failure: cleanup of previous allocations
  * 
- * GESTION D'ERREURS:
- * - Verification de chaque allocation
- * - Liberation automatique en cascade si echec partiel
- * - Retour NULL si impossible d'allouer
+ * ERROR HANDLING:
+ * - Check each allocation
+ * - Automatic cascade cleanup on partial failure
+ * - Return NULL if unable to allocate
  */
 Model3D* createModel3D(void) {
-    // Etape 1: Allocation de la structure principale
+    // Step 1: Main structure allocation
     Model3D* model = (Model3D*)malloc(sizeof(Model3D));
     if (model == NULL) {
-        return NULL;  // Echec allocation structure principale
+        return NULL;  // Main structure allocation failed
     }
     
-    // Etape 2: Allocation du tableau de vertices
-    // Taille: MAX_VERTICES * sizeof(Vertex3D) octets
+    // Step 2: Vertex array allocation
+    // Size: MAX_VERTICES * sizeof(Vertex3D) bytes
     model->vertices = (Vertex3D*)malloc(MAX_VERTICES * sizeof(Vertex3D));
     if (model->vertices == NULL) {
-        free(model);  // Cleanup: liberer la structure principale
-        return NULL;  // Echec allocation tableau vertices
+        free(model);  // Cleanup: free main structure
+        return NULL;  // Vertex array allocation failed
     }
     
-    // Etape 3: Allocation du tableau de faces
-    // Taille: MAX_FACES * sizeof(Face3D) octets
+    // Step 3: Face array allocation
+    // Size: MAX_FACES * sizeof(Face3D) bytes
     model->faces = (Face3D*)malloc(MAX_FACES * sizeof(Face3D));
     if (model->faces == NULL) {
-        free(model->vertices);  // Cleanup: liberer tableau vertices
-        free(model);            // Cleanup: liberer structure principale
-        return NULL;            // Echec allocation tableau faces
+        free(model->vertices);  // Cleanup: free vertex array
+        free(model);            // Cleanup: free main structure
+        return NULL;            // Face array allocation failed
     }
     
-    // Etape 4: Initialisation des compteurs
-    model->vertex_count = 0;    // Aucun vertex charge initialement
-    model->face_count = 0;      // Aucune face chargee initialement
+    // Step 4: Counter initialization
+    model->vertex_count = 0;    // No vertices loaded initially
+    model->face_count = 0;      // No faces loaded initially
     
-    return model;  // Succes: retourner le modele initialise
+    return model;  // Success: return initialized model
 }
 
 /**
- * DESTRUCTION D'UN MODELE 3D
- * ==========================
+ * DESTROYING A 3D MODEL
+ * ======================
  * 
- * Cette fonction libere proprement toute la memoire allouee pour un
- * modele 3D. Elle suit le principe LIFO (Last In, First Out) pour
- * la liberation: derniers alloues = premiers liberes.
+ * This function properly frees all memory allocated for a
+ * 3D model. It follows the LIFO principle (Last In, First Out) for
+ * cleanup: last allocated = first freed.
  * 
- * ORDRE DE LIBERATION:
- * 1. Tableau des faces (si alloue)
- * 2. Tableau des vertices (si alloue)  
- * 3. Structure principale
+ * CLEANUP ORDER:
+ * 1. Face array (if allocated)
+ * 2. Vertex array (if allocated)  
+ * 3. Main structure
  * 
- * SECURITE:
- * - Verification NULL pour eviter les erreurs de segmentation
- * - Liberation selective selon les allocations reussies
+ * SAFETY:
+ * - NULL check to avoid segmentation errors
+ * - Selective cleanup based on successful allocations
  */
 void destroyModel3D(Model3D* model) {
-    // Verification pointeur principal
+    // Check main pointer
     if (model != NULL) {
-        // Liberation tableau vertices (si alloue)
+        // Free vertex array (if allocated)
         if (model->vertices != NULL) {
             free(model->vertices);
         }
         
-        // Liberation tableau faces (si alloue)
+        // Free face array (if allocated)
         if (model->faces != NULL) {
             free(model->faces);
         }
         
-        // Liberation structure principale
+        // Free main structure
         free(model);
     }
 }
 
 /**
- * CHARGEMENT COMPLET D'UN MODELE 3D
- * =================================
+ * COMPLETE 3D MODEL LOADING
+ * ==========================
  * 
- * Cette fonction coordonne le chargement complet d'un fichier OBJ
- * en appellant successivement les fonctions de lecture des vertices
- * et des faces.
+ * This function coordinates the complete loading of an OBJ file
+ * by successively calling the vertex and face reading functions.
  * 
- * PIPELINE DE CHARGEMENT:
- * 1. Verification des parametres d'entree
- * 2. Lecture des vertices depuis le fichier
- * 3. Lecture des faces depuis le fichier  
- * 4. Mise a jour des compteurs dans la structure
+ * LOADING PIPELINE:
+ * 1. Input parameter validation
+ * 2. Read vertices from file
+ * 3. Read faces from file  
+ * 4. Update counters in structure
  * 
- * GESTION D'ERREURS:
- * - Echec lecture vertices: arret immediat
- * - Echec lecture faces: avertissement mais continuation
- *   (modele vertices-seulement reste utilisable)
+ * ERROR HANDLING:
+ * - Vertex reading failure: immediate stop
+ * - Face reading failure: warning but continue
+ *   (vertices-only model remains usable)
  */
 int loadModel3D(Model3D* model, const char* filename) {
-    // Verification des parametres d'entree
+    // Input parameter validation
     if (model == NULL || filename == NULL) {
-        return -1;  // Parametres invalides
+        return -1;  // Invalid parameters
     }
     
-    // Etape 1: Lecture des vertices depuis le fichier OBJ
+    // Step 1: Read vertices from OBJ file
     model->vertex_count = readVertices(filename, model->vertices, MAX_VERTICES);
     if (model->vertex_count < 0) {
-        return -1;  // Echec critique: impossible de lire les vertices
+        return -1;  // Critical failure: unable to read vertices
     }
     
-    // Etape 2: Lecture des faces depuis le fichier OBJ
+    // Step 2: Read faces from OBJ file
     model->face_count = readFaces(filename, model->faces, MAX_FACES);
     if (model->face_count < 0) {
-        // Echec non-critique: modele vertices-seulement reste utilisable
-        printf("\nAvertissement: Impossible de lire les faces\n");
-        model->face_count = 0;  // Aucune face disponible
+        // Critical failure: unable to read vertices
+        printf("\nWarning: Unable to read faces\n");
+        model->face_count = 0;  // No faces available
     }
     
-    return 0;  // Succes: modele charge (avec ou sans faces)
+    return 0;  // Success: model loaded (with or without faces)
 }
 
 // ============================================================================
-//                    FONCTIONS D'INTERFACE UTILISATEUR
+//                    USER INTERFACE FUNCTIONS
 // ============================================================================
 
 /**
- * SAISIE DES PARAMETRES DE L'OBSERVATEUR
- * ======================================
+ * OBSERVER PARAMETER INPUT
+ * ========================
  * 
- * Cette fonction presente une interface textuelle pour permettre a 
- * l'utilisateur de specifier les parametres de visualisation 3D.
+ * This function presents a text interface to allow the
+ * user to specify 3D visualization parameters.
  * 
- * PARAMETRES DEMANDES:
- * - Angle horizontal: rotation autour de l'axe Y (vue gauche/droite)
- * - Angle vertical: rotation autour de l'axe X (vue haut/bas)
- * - Distance: eloignement de l'observateur (zoom)
- * - Angle rotation ecran: rotation finale dans le plan 2D
+ * REQUESTED PARAMETERS:
+ * - Horizontal angle: rotation around Y-axis (left/right view)
+ * - Vertical angle: rotation around X-axis (up/down view)
+ * - Distance: observer distance (zoom)
+ * - Screen rotation angle: final rotation in 2D plane
  * 
- * GESTION D'ERREURS:
- * - Valeurs par defaut si echec de saisie
- * - Conversion automatique string->Extended avec atof() puis cast
+ * ERROR HANDLING:
+ * - Default values if input failure
+ * - Automatic string->Extended conversion with atof() then cast
  */
 void getObserverParams(ObserverParams* params) {
-    char input[50];  // Buffer pour la saisie utilisateur
+    char input[50];  // Buffer for user input
     
-    // Affichage de l'en-tete de la section
-    printf("\nParametres de l'observateur:\n");
+    // Display section header
+    printf("\nObserver parameters:\n");
     printf("============================\n");
-    printf("(Appuyez ENTREE pour utiliser les valeurs par defaut)\n");
-    printf("(Entrez 'debug' pour voir les valeurs utilisees)\n");
+    printf("(Press ENTER to use default values)\n");
+    printf("(Enter 'debug' to see values used)\n");
     
-    // Saisie angle horizontal (rotation autour Y)
-    printf("Angle horizontal (degres, defaut 30): ");
+    // Input horizontal angle (rotation around Y)
+    printf("Horizontal angle (degrees, default 30): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
-        // Enlever le saut de ligne
+        // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            params->angle_h = 30.0;     // Valeur par defaut si ENTREE (SANE)
+            params->angle_h = 30.0;     // Default value if ENTER (SANE)
         } else {
-            params->angle_h = (Extended)atof(input);  // Conversion string->Extended (SANE)
+            params->angle_h = (Extended)atof(input);  // String->Extended conversion (SANE)
         }
     } else {
-        params->angle_h = 30.0;         // Valeur par defaut si echec (SANE)
+        params->angle_h = 30.0;         // Default value if error (SANE)
     }
     
-    // Saisie angle vertical (rotation autour X)  
-    printf("Angle vertical (degres, defaut 15): ");
+    // Input vertical angle (rotation around X)  
+    printf("Vertical angle (degrees, default 15): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
-        // Enlever le saut de ligne
+        // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            params->angle_v = 15.0;     // Valeur par defaut si ENTREE (SANE)
+            params->angle_v = 15.0;     // Default value if ENTER (SANE)
         } else {
-            params->angle_v = (Extended)atof(input);  // Conversion string->Extended (SANE)
+            params->angle_v = (Extended)atof(input);  // String->Extended conversion (SANE)
         }
     } else {
-        params->angle_v = 15.0;         // Valeur par defaut si echec (SANE)
+        params->angle_v = 15.0;         // Default value if error (SANE)
     }
     
-    // Saisie distance d'observation (zoom/perspective)
-    printf("Distance (defaut 10): ");
+    // Input observation distance (zoom/perspective)
+    printf("Distance (default 10): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
-        // Enlever le saut de ligne
+        // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            params->distance = 10.0;    // Valeur par defaut si ENTREE (SANE)
+            params->distance = 10.0;    // Default value if ENTER (SANE)
         } else {
-            params->distance = (Extended)atof(input); // Conversion string->Extended (SANE)
+            params->distance = (Extended)atof(input); // String->Extended conversion (SANE)
         }
     } else {
-        params->distance = 10.0;        // Distance par defaut: vue equilibree (SANE)
+        params->distance = 10.0;        // Default distance: balanced view (SANE)
     }
     
-    // Saisie angle de rotation ecran (rotation finale 2D)
-    printf("Angle de rotation ecran (degres, defaut 0): ");
+    // Input screen rotation angle (final 2D rotation)
+    printf("Screen rotation angle (degrees, default 0): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
-        // Enlever le saut de ligne
+        // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            params->angle_w = 0.0;      // Valeur par defaut si ENTREE (SANE)
+            params->angle_w = 0.0;      // Default value if ENTER (SANE)
         } else {
-            params->angle_w = (Extended)atof(input);  // Conversion string->Extended (SANE)
+            params->angle_w = (Extended)atof(input);  // String->Extended conversion (SANE)
         }
     } else {
-        params->angle_w = 0.0;          // Pas de rotation par defaut (SANE)
+        params->angle_w = 0.0;          // No rotation by default (SANE)
     }
     
-//     // DEBUG: Afficher les parametres finalement utilisés
-//     printf("\n=== PARAMETRES UTILISES ===\n");
-//     printf("Angle horizontal: %.1f\n", params->angle_h);
-//     printf("Angle vertical: %.1f\n", params->angle_v);
+//     // DEBUG: Display the parameters finally used
+//     printf("\n=== PARAMETERS USED ===\n");
+//     printf("Horizontal angle: %.1f\n", params->angle_h);
+//     printf("Vertical angle: %.1f\n", params->angle_v);
 //     printf("Distance: %.1f\n", params->distance);
-//     printf("Angle ecran: %.1f\n", params->angle_w);
+//     printf("Screen angle: %.1f\n", params->angle_w);
 //     printf("==========================\n");
 //     keypress();
 }
 
 /**
- * AFFICHAGE DES INFORMATIONS DU MODELE
- * ====================================
+ * MODEL INFORMATION DISPLAY
+ * =========================
  * 
- * Affiche un resume statistique du modele 3D charge:
- * nombre de vertices et nombre de faces.
+ * Displays a statistical summary of the loaded 3D model:
+ * number of vertices and number of faces.
  * 
- * Cette fonction sert de validation rapide que le chargement
- * s'est deroule correctement.
+ * This function serves as quick validation that loading
+ * completed correctly.
  */
 void displayModelInfo(Model3D* model) {
-    printf("\nResume de l'analyse:\n");
+    printf("\nAnalysis summary:\n");
     printf("====================\n");
-    printf("Nombre de vertices (points 3D) trouves: %d\n", model->vertex_count);
-    printf("Nombre de faces trouvees: %d\n", model->face_count);
+    printf("Number of vertices (3D points) found: %d\n", model->vertex_count);
+    printf("Number of faces found: %d\n", model->face_count);
 }
 
 /**
- * AFFICHAGE DETAILLE DES RESULTATS
- * ================================
+ * DETAILED RESULTS DISPLAY
+ * ========================
  * 
- * Cette fonction affiche toutes les coordonnees des vertices
- * a travers les differentes etapes du pipeline de rendu:
- * 1. Coordonnees originales (x, y, z)
- * 2. Coordonnees transformees (xo, yo, zo) 
- * 3. Coordonnees projetees 2D (x2d, y2d)
+ * This function displays all vertex coordinates through
+ * the different stages of the rendering pipeline:
+ * 1. Original coordinates (x, y, z)
+ * 2. Transformed coordinates (xo, yo, zo)
+ * 3. 2D projected coordinates (x2d, y2d)
  * 
- * Egalement affiche la liste des faces avec leurs vertices.
- * Utile pour le debug et la verification des calculs.
+ * Also displays the list of faces with their vertices.
+ * Useful for debugging and calculation verification.
  */
 void displayResults(Model3D* model) {
     int i, j;
     
-    // Affichage des vertices si presents
+    // Display vertices if present
     if (model->vertex_count > 0) {
-        printf("\nCoordonnees completes (Originales -> 3D -> 2D):\n");
+        printf("\nComplete coordinates (Original -> 3D -> 2D):\n");
         printf("-----------------------------------------------\n");
         
-        // Parcours de tous les vertices
+        // Go through all vertices
         for (i = 0; i < model->vertex_count; i++) {
-            // Verification si le vertex est visible a l'ecran
+            // Check if vertex is visible on screen
             if (model->vertices[i].x2d >= 0 && model->vertices[i].y2d >= 0) {
-                // Vertex visible: afficher toutes les coordonnees
+                // Visible vertex: display all coordinates
                 printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (%d,%d)\n", 
-                       i + 1,  // Numerotation base 1 pour l'utilisateur
-                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Originales
-                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo,  // Transformees
-                       model->vertices[i].x2d, model->vertices[i].y2d);                      // Projetees 2D
+                       i + 1,  // Base-1 numbering for user
+                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Original
+                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo,  // Transformed
+                       model->vertices[i].x2d, model->vertices[i].y2d);                      // Projected 2D
             } else {
-                // Vertex invisible (derriere observateur ou hors ecran)
+                // Invisible vertex (behind observer or off screen)
                 printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (invisible)\n", 
-                       i + 1,  // Numerotation base 1 pour l'utilisateur
-                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Originales
-                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo); // Transformees
+                       i + 1,  // Base-1 numbering for user
+                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Original
+                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo); // Transformed
             }
         }
     }
     
-    // Affichage des faces si presentes
+    // Display faces if present
     if (model->face_count > 0) {
-        printf("\nListe des faces:\n");
+        printf("\nFace list:\n");
         printf("----------------\n");
         
-        // Parcours de toutes les faces
+        // Go through all faces
         for (i = 0; i < model->face_count; i++) {
             printf("  Face %3d (%d vertices, z_max=%.2f): ", i + 1, model->faces[i].vertex_count, model->faces[i].z_max);
             
-            // Affichage des indices des vertices de cette face
+            // Display vertex indices of this face
             for (j = 0; j < model->faces[i].vertex_count; j++) {
                 printf("%d", model->faces[i].vertex_indices[j]); // Index base 1
-                if (j < model->faces[i].vertex_count - 1) printf("-"); // Separateur
+                if (j < model->faces[i].vertex_count - 1) printf("-"); // Separator
             }
             printf("\n");
             
-            // Affichage detaille des coordonnees des vertices de cette face
-            printf("       Coordonnees des vertices de cette face:\n");
+            // Detailed display of vertex coordinates of this face
+            printf("       Coordinates of vertices of this face:\n");
             for (j = 0; j < model->faces[i].vertex_count; j++) {
-                int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Convertir base 1 vers base 0
+                int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
                 if (vertex_idx >= 0 && vertex_idx < model->vertex_count) {
                     printf("         Vertex %d: (%.2f,%.2f,%.2f) -> (%d,%d)\n",
-                           model->faces[i].vertex_indices[j], // Index original base 1
+                           model->faces[i].vertex_indices[j], // Original index base 1
                            model->vertices[vertex_idx].x, model->vertices[vertex_idx].y, model->vertices[vertex_idx].z,
                            model->vertices[vertex_idx].x2d, model->vertices[vertex_idx].y2d);
                 } else {
-                    printf("         Vertex %d: ERREUR - Index hors limites!\n", 
+                    printf("         Vertex %d: ERROR - Index out of bounds!\n", 
                            model->faces[i].vertex_indices[j]);
                 }
             }
             printf("\n");
         }
         
-        // Lancement du rendu graphique (si faces disponibles)
+        // Launch graphic rendering (if faces available)
         drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
     }
 }
 
 /**
- * TRAITEMENT COMPLET D'UN MODELE 3D
- * =================================
+ * COMPLETE 3D MODEL PROCESSING
+ * ============================
  * 
- * Cette fonction execute le pipeline complet de transformation 3D:
- * 1. Transformation vers le systeme observateur
- * 2. Projection sur l'ecran 2D
+ * This function executes the complete 3D transformation pipeline:
+ * 1. Transformation to observer system
+ * 2. Projection on 2D screen
  * 
- * Elle coordonne les deux etapes principales du rendu 3D en
- * appellant les fonctions specialisees dans l'ordre correct.
+ * It coordinates the two main stages of 3D rendering by
+ * calling specialized functions in the correct order.
  */
 void processModel(Model3D* model, ObserverParams* params) {
-    // Etape 1: Transformation 3D vers systeme observateur
-    // Application des rotations et translation selon les parametres
+    // Step 1: 3D transformation to observer system
+    // Apply rotations and translation according to parameters
     transformToObserver(model->vertices, model->vertex_count, 
                        params->angle_h, params->angle_v, params->distance);
     
-    // Etape 1.5: Calcul des profondeurs max pour chaque face (pour tri Z-buffer)
+    // Step 1.5: Calculate maximum depths for each face (for Z-buffer sorting)
     calculateFaceDepths(model->vertices, model->faces, model->face_count);
     
-    // Etape 1.6: Tri des faces par profondeur (algorithme du peintre)
+    // Step 1.6: Sort faces by depth (painter's algorithm)
     sortFacesByDepth(model->faces, model->face_count);
-    // printf("Faces triees par profondeur (%d faces)\n", model->face_count);
+    // printf("Faces sorted by depth (%d faces)\n", model->face_count);
     
-    // Etape 2: Projection perspective sur ecran 2D
-    // Conversion 3D -> 2D avec gestion de la perspective
+    // Step 2: Perspective projection on 2D screen
+    // 3D -> 2D conversion with perspective management
     projectTo2D(model->vertices, model->vertex_count, params->angle_w);
 }
 
 /**
- * FONCTION ULTRA-RAPIDE: Transformation + Projection combinées
- * ===========================================================
+ * ULTRA-FAST FUNCTION: Combined Transformation + Projection
+ * ==========================================================
  */
 void processModelFast(Model3D* model, ObserverParams* params) {
     int i;
@@ -880,7 +879,7 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     Extended x, y, z, zo, xo, yo;
     Extended inv_zo, x2d_temp, y2d_temp;
     
-    // Précalculer TOUTES les valeurs trigonométriques (SANE optimisé)
+    // Pre-calculate ALL trigonometric values (SANE optimized)
     rad_h = params->angle_h * PI / 180.0;
     rad_v = params->angle_v * PI / 180.0;
     rad_w = params->angle_w * PI / 180.0;
@@ -892,7 +891,7 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     cos_w = cos(rad_w);
     sin_w = sin(rad_w);
     
-    // Précalculer tous les produits trigonométriques
+    // Pre-calculate all trigonometric products
     const Extended cos_h_cos_v = cos_h * cos_v;
     const Extended sin_h_cos_v = sin_h * cos_v;
     const Extended cos_h_sin_v = cos_h * sin_v;
@@ -915,7 +914,7 @@ void processModelFast(Model3D* model, ObserverParams* params) {
             xo = -x * sin_h + y * cos_h;
             yo = -x * cos_h_sin_v - y * sin_h_sin_v + z * cos_v;
             
-            // Stocker pour tri des faces
+            // Store for face sorting
             model->vertices[i].zo = zo;
             model->vertices[i].xo = xo;
             model->vertices[i].yo = yo;
@@ -937,39 +936,39 @@ void processModelFast(Model3D* model, ObserverParams* params) {
         }
     }
     
-    // Tri des faces après transformation
+    // Face sorting after transformation
     calculateFaceDepths(model->vertices, model->faces, model->face_count);
     sortFacesByDepth(model->faces, model->face_count);
 }
 
 // ============================================================================
-//                    IMPLEMENTATIONS DES FONCTIONS DE BASE
+//                    BASIC FUNCTION IMPLEMENTATIONS
 // ============================================================================
 
 /**
- * LECTURE DES VERTICES DEPUIS UN FICHIER OBJ
- * ==========================================
+ * VERTEX READING FROM OBJ FILE
+ * ============================
  * 
- * Cette fonction parse un fichier au format OBJ pour extraire les
- * vertices (points 3D). Elle recherche les lignes commencant par "v "
- * et extrait les coordonnees X, Y, Z.
+ * This function parses an OBJ format file to extract
+ * vertices (3D points). It searches for lines starting with "v "
+ * and extracts X, Y, Z coordinates.
  * 
- * FORMAT OBJ POUR VERTICES:
+ * OBJ FORMAT FOR VERTICES:
  *   v 1.234 5.678 9.012
  *   v -2.5 0.0 3.14159
  * 
- * ALGORITHME:
- * 1. Ouverture du fichier en mode lecture
- * 2. Lecture ligne par ligne avec fgets()
- * 3. Detection des lignes "v " avec verification caracteres
- * 4. Extraction coordonnees avec sscanf()
- * 5. Stockage dans tableau avec verification limites
- * 6. Affichage progressif pour feedback utilisateur
+ * ALGORITHM:
+ * 1. Open file in read mode
+ * 2. Read line by line with fgets()
+ * 3. Detect "v " lines with character verification
+ * 4. Extract coordinates with sscanf()
+ * 5. Store in array with bounds checking
+ * 6. Progressive display for user feedback
  * 
- * GESTION D'ERREURS:
- * - Verification ouverture fichier
- * - Protection contre debordement tableau
- * - Validation format coordonnees
+ * ERROR HANDLING:
+ * - File opening verification
+ * - Array overflow protection
+ * - Coordinate format validation
  */
 int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
     FILE *file;
@@ -977,28 +976,28 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
     int line_number = 1;
     int vertex_count = 0;
     
-    // Ouvrir le fichier en mode lecture
+    // Open file in read mode
     file = fopen(filename, "r");
     if (file == NULL) {
-        printf("Erreur: Impossible d'ouvrir le fichier '%s'\n", filename);
-        printf("Verifiez que le fichier existe et que vous avez les permissions de lecture.\n");
-        return -1;  // Retourner -1 en cas d'erreur
+        printf("Error: Unable to open file '%s'\n", filename);
+        printf("Check that the file exists and you have read permissions.\n");
+        return -1;  // Return -1 on error
     }
     
-    printf("\nContenu du fichier '%s':\n", filename);
+    printf("\nFile contents '%s':\n", filename);
     printf("========================\n\n");
     
-    // Lire le fichier ligne par ligne
+    // Read file line by line
     while (fgets(line, sizeof(line), file) != NULL) {
         // printf("%3d: %s", line_number, line);
         
-        // Verifier si la ligne commence par "v " (vertex - format OBJ standard)
+        // Check if line starts with "v " (vertex - standard OBJ format)
         if (line[0] == 'v' && line[1] == ' ') {
             if (vertex_count < max_vertices) {
-                float x, y, z;  // Lecture temporaire en float
-                // Extraire les coordonnees x, y, z
+                float x, y, z;  // Temporary reading in float
+                // Extract coordinates x, y, z
                 if (sscanf(line + 2, "%f %f %f", &x, &y, &z) == 3) {
-                    // Conversion vers Extended pour utiliser SANE
+                    // Convert to Extended to use SANE
                     vertices[vertex_count].x = (Extended)x;
                     vertices[vertex_count].y = (Extended)y;
                     vertices[vertex_count].z = (Extended)z;
@@ -1007,21 +1006,21 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
                     //        vertex_count, x, y, z);
                 }
             } else {
-                printf("     -> ATTENTION: Limite de vertices atteinte (%d)\n", max_vertices);
+                printf("     -> WARNING: Vertex limit reached (%d)\n", max_vertices);
             }
         }
         
         line_number++;
     }
     
-    // Fermer le fichier
+    // Close file
     fclose(file);
     
     // printf("\n\nAnalyse terminee. %d lignes lues.\n", line_number - 1);
-    return vertex_count;  // Retourner le nombre de vertices lus
+    return vertex_count;  // Return the number of vertices read
 }
 
-// Fonction pour lire les faces d'un fichier 3D
+// Function to read faces from a 3D file
 int readFaces(const char* filename, Face3D* faces, int max_faces) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
@@ -1030,55 +1029,55 @@ int readFaces(const char* filename, Face3D* faces, int max_faces) {
     int face_count = 0;
     int i;
     
-    // Ouvrir le fichier en mode lecture
+    // Open file in read mode
     file = fopen(filename, "r");
     if (file == NULL) {
-        printf("Erreur: Impossible d'ouvrir le fichier '%s' pour lire les faces\n", filename);
-        return -1;  // Retourner -1 en cas d'erreur
+        printf("Error: Unable to open file '%s' to read faces\n", filename);
+        return -1;  // Return -1 on error
     }
     
-    printf("\nLecture des faces du fichier '%s':\n", filename);
+    printf("\nReading faces from file '%s':\n", filename);
     printf("==================================\n\n");
     
-    // Lire le fichier ligne par ligne
+    // Read file line by line
     while (fgets(line, sizeof(line), file) != NULL) {
-        // Verifier si la ligne commence par "f " (face)
+        // Check if line starts with "f " (face)
         if (line[0] == 'f' && line[1] == ' ') {
             if (face_count < max_faces) {
                 // printf("%3d: %s", line_number, line);
                 
                 faces[face_count].vertex_count = 0;
                 
-                // Utiliser une approche plus robuste que strtok
-                char *ptr = line + 2;  // Commencer apres "f "
+                // Use a more robust approach than strtok
+                char *ptr = line + 2;  // Start after "f "
                 faces[face_count].vertex_count = 0;
                 
-                // Analyser caractere par caractere
+                // Analyze character by character
                 while (*ptr != '\0' && *ptr != '\n' && faces[face_count].vertex_count < MAX_FACE_VERTICES) {
-                    // Ignorer les espaces et tabulations
+                    // Skip spaces and tabs
                     while (*ptr == ' ' || *ptr == '\t') ptr++;
                     
                     if (*ptr == '\0' || *ptr == '\n') break;
                     
-                    // Lire le nombre
+                    // Read the number
                     int vertex_index = 0;
                     while (*ptr >= '0' && *ptr <= '9') {
                         vertex_index = vertex_index * 10 + (*ptr - '0');
                         ptr++;
                     }
                     
-                    // Ignorer les donnees de texture/normale (apres /)
+                    // Skip texture/normal data (after /)
                     while (*ptr != '\0' && *ptr != ' ' && *ptr != '\t' && *ptr != '\n') {
                         ptr++;
                     }
                     
-                    // Verifier que l'indice est valide (base 1, donc >= 1)
+                    // Verify that index is valid (base 1, so >= 1)
                     if (vertex_index >= 1) {
                         faces[face_count].vertex_indices[faces[face_count].vertex_count] = vertex_index;
                         faces[face_count].vertex_count++;
-                        // printf("  -> Vertex index lu: %d\n", vertex_index);
-                    } else if (vertex_index > 0) {  // vertex_index == 0 signifie qu'aucun nombre n'a ete lu
-                        printf("     -> AVERTISSEMENT: Indice de vertex invalide %d ignore\n", vertex_index);
+                        // printf("  -> Vertex index read: %d\n", vertex_index);
+                    } else if (vertex_index > 0) {  // vertex_index == 0 means no number was read
+                        printf("     -> WARNING: Invalid vertex index %d ignored\n", vertex_index);
                     }
                 }
                 
@@ -1089,28 +1088,28 @@ int readFaces(const char* filename, Face3D* faces, int max_faces) {
                 // }
                 // printf(")\n");
                 
-                // Validation supplementaire: si vertex count = 0, ignorer cette face
+                // Additional validation: if vertex count = 0, ignore this face
                 if (faces[face_count].vertex_count == 0) {
-                    printf("     -> AVERTISSEMENT: Face sans vertices valides ignoree\n");
+                    printf("     -> WARNING: Face without valid vertices ignored\n");
                 } else {
                     face_count++;
                 }
             } else {
-                printf("     -> ATTENTION: Limite de faces atteinte (%d)\n", max_faces);
+                printf("     -> WARNING: Face limit reached (%d)\n", max_faces);
             }
         }
         
         line_number++;
     }
     
-    // Fermer le fichier
+    // Close file
     fclose(file);
     
-    // printf("\n\nAnalyse des faces terminee. %d faces lues.\n", face_count);
-    return face_count;  // Retourner le nombre de faces lues
+    // printf("\n\nFace analysis complete. %d faces read.\n", face_count);
+    return face_count;  // Return number of faces read
 }
 
-// Fonction pour transformer les coordonnees vers le systeme observateur
+// Function to transform coordinates to observer system
 void transformToObserver(Vertex3D* vertices, int vertex_count, 
                         Extended angle_h, Extended angle_v, Extended distance) {
     int i;
@@ -1118,38 +1117,38 @@ void transformToObserver(Vertex3D* vertices, int vertex_count,
     Extended cos_h, sin_h, cos_v, sin_v;
     Extended x, y, z;
     
-    // Convertir les angles en radians (SANE)
+    // Convert angles to radians (SANE)
     rad_h = angle_h * PI / 180.0;
     rad_v = angle_v * PI / 180.0;
     
-    // Precalculer les valeurs trigonometriques
+    // Pre-calculate trigonometric values
     cos_h = cos(rad_h);
     sin_h = sin(rad_h);
     cos_v = cos(rad_v);
     sin_v = sin(rad_v);
     
-    // OPTIMISATION: Precalculer les produits trigonometriques (SANE)
+    // OPTIMIZATION: Pre-calculate trigonometric products (SANE)
     Extended cos_h_cos_v = cos_h * cos_v;
     Extended sin_h_cos_v = sin_h * cos_v;
     Extended cos_h_sin_v = cos_h * sin_v;
     Extended sin_h_sin_v = sin_h * sin_v;
     
 #if !PERFORMANCE_MODE
-    printf("\nTransformation vers le systeme observateur:\n");
-    printf("Angle horizontal: %.1f degres\n", angle_h);
-    printf("Angle vertical: %.1f degres\n", angle_v);
+    printf("\nTransformation to observer system:\n");
+    printf("Horizontal angle: %.1f degrees\n", angle_h);
+    printf("Vertical angle: %.1f degrees\n", angle_v);
     printf("Distance: %.3f\n", distance);
     printf("==========================================\n");
 #endif
     
-    // Transformer chaque vertex - VERSION OPTIMISEE
+    // Transform each vertex - OPTIMIZED VERSION
     for (i = 0; i < vertex_count; i++) {
-        // Acceder directement aux coordonnees
+        // Access coordinates directly
         x = vertices[i].x;
         y = vertices[i].y;
         z = vertices[i].z;
         
-        // OPTIMISATION: Utiliser les produits precalcules
+        // OPTIMIZATION: Use pre-calculated products
         vertices[i].zo = -x * cos_h_cos_v - y * sin_h_cos_v - z * sin_v + distance;
         vertices[i].xo = -x * sin_h + y * cos_h;
         vertices[i].yo = -x * cos_h_sin_v - y * sin_h_sin_v + z * cos_v;
@@ -1159,44 +1158,44 @@ void transformToObserver(Vertex3D* vertices, int vertex_count,
     }
 }
 
-// Fonction pour projeter les coordonnees 3D sur l'ecran 2D
+// Function to project 3D coordinates onto 2D screen
 void projectTo2D(Vertex3D* vertices, int vertex_count, Extended angle_w) {
     int i;
     Extended rad_w;
     Extended cos_w, sin_w;
     Extended x2d_temp, y2d_temp, save_x;
     
-    // Convertir l'angle en radians (SANE)
+    // Convert angle to radians (SANE)
     rad_w = angle_w * PI / 180.0;
     
-    // Precalculer les valeurs trigonometriques (SANE)
+    // Pre-calculate trigonometric values (SANE)
     cos_w = cos(rad_w);
     sin_w = sin(rad_w);
     
-    // OPTIMISATION: Precalculer les constantes (SANE)
+    // OPTIMIZATION: Pre-calculate constants (SANE)
     const Extended scale = 100.0;
     const Extended centre_x_f = (Extended)CENTRE_X;
     const Extended centre_y_f = (Extended)CENTRE_Y;
     
 #if !PERFORMANCE_MODE
-    printf("\nProjection sur l'ecran 2D:\n");
-    printf("Angle de rotation: %.1f degres\n", angle_w);
-    printf("Centre ecran: (%d, %d)\n", CENTRE_X, CENTRE_Y);
+    printf("\nProjection on 2D screen:\n");
+    printf("Rotation angle: %.1f degrees\n", angle_w);
+    printf("Screen center: (%d, %d)\n", CENTRE_X, CENTRE_Y);
     printf("===========================\n");
 #endif
     
-    // Projeter chaque vertex - VERSION OPTIMISEE
+    // Project each vertex - OPTIMIZED VERSION
     for (i = 0; i < vertex_count; i++) {
-        // OPTIMISATION: Test de visibilite en premier
+        // OPTIMIZATION: Visibility test first
         if (vertices[i].zo > 0.0) {
-            // OPTIMISATION: Une seule division par vertex (SANE)
+            // OPTIMIZATION: Single division per vertex (SANE)
             Extended inv_zo = scale / vertices[i].zo;
             
-            // Projection perspective optimisee
+            // Optimized perspective projection
             x2d_temp = vertices[i].xo * inv_zo + centre_x_f;
             y2d_temp = centre_y_f - vertices[i].yo * inv_zo;
             
-            // OPTIMISATION: Rotation sans variable temporaire
+            // OPTIMIZATION: Rotation without temporary variable
             vertices[i].x2d = (int)(cos_w * (x2d_temp - centre_x_f) - sin_w * (centre_y_f - y2d_temp) + centre_x_f);
             vertices[i].y2d = (int)(centre_y_f - (sin_w * (x2d_temp - centre_x_f) + cos_w * (centre_y_f - y2d_temp)));
             
@@ -1204,88 +1203,88 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Extended angle_w) {
             //        i + 1, vertices[i].xo, vertices[i].yo, vertices[i].zo, 
             //        vertices[i].x2d, vertices[i].y2d);
         } else {
-            // Point derriere l'observateur, pas de projection
+            // Point behind observer, no projection
             vertices[i].x2d = -1;
             vertices[i].y2d = -1;
-            // printf("Vertex %3d: Derriere l'observateur (zo=%.2f)\n", 
+            // printf("Vertex %3d: Behind observer (zo=%.2f)\n", 
             //        i + 1, vertices[i].zo);
         }
     }
 }
 
 /**
- * CALCUL DES PROFONDEURS MAXIMALES DES FACES
- * ==========================================
+ * CALCULATING MAXIMUM FACE DEPTHS
+ * ================================
  * 
- * Cette fonction calcule pour chaque face la profondeur maximale (z_max)
- * de tous ses vertices dans le systeme de coordonnees de l'observateur.
- * Cette valeur est utilisee pour le tri des faces lors du rendu
- * (algorithme du peintre).
+ * This function calculates for each face the maximum depth (z_max)
+ * of all its vertices in the observer coordinate system.
+ * This value is used for face sorting during rendering
+ * (painter's algorithm).
  * 
- * PARAMETRES:
- *   vertices   : Tableau des vertices avec coordonnees dans le systeme observateur
- *   faces      : Tableau des faces a traiter
- *   face_count : Nombre de faces
+ * PARAMETERS:
+ *   vertices   : Array of vertices with coordinates in observer system
+ *   faces      : Array of faces to process
+ *   face_count : Number of faces
  * 
  * NOTES:
- *   - Doit etre appelee APRES transformToObserver()
- *   - Utilise les coordonnees zo (systeme observateur)
- *   - Plus la valeur z_max est grande, plus la face est eloignee
+ *   - Must be called AFTER transformToObserver()
+ *   - Uses zo coordinates (observer system)
+ *   - Higher z_max value means face is farther away
  */
 void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
     int i, j;
     
-    // Pour chaque face
+    // For each face
     for (i = 0; i < face_count; i++) {
-        Extended z_max = -9999.0;  // Initialiser avec une valeur tres petite (SANE)
+        Extended z_max = -9999.0;  // Initialize with very small value (SANE)
         
-        // Parcourir tous les vertices de cette face
+        // Go through all vertices of this face
         for (j = 0; j < faces[i].vertex_count; j++) {
-            int vertex_idx = faces[i].vertex_indices[j] - 1; // Conversion base 1 vers base 0
+            int vertex_idx = faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
             
-            // Verifier que l'indice est valide (utiliser un nombre raisonnable de vertices)
+            // Verify that index is valid (use reasonable number of vertices)
             if (vertex_idx >= 0) {
-                // Comparer avec la coordonnee zo (profondeur dans systeme observateur)
+                // Compare with zo coordinate (depth in observer system)
                 if (vertices[vertex_idx].zo > z_max) {
                     z_max = vertices[vertex_idx].zo;
                 }
             }
         }
         
-        // Stocker la profondeur maximale dans la face
+        // Store maximum depth in the face
         faces[i].z_max = z_max;
         
-        // Debug optionnel
+        // Optional debug
         // printf("Face %d: z_max = %.2f\n", i + 1, z_max);
     }
 }
 
 /**
- * TRI DES FACES PAR PROFONDEUR (VERSION OPTIMISEE)
- * ================================================
+ * FACE SORTING BY DEPTH (OPTIMIZED VERSION)
+ * ==========================================
  * 
- * Cette fonction trie les faces par ordre decroissant de profondeur z_max
- * pour implementer l'algorithme du peintre. Les faces les plus eloignees
- * (z_max plus grand) sont placees en premier dans le tableau pour etre
- * dessinees en premier, et les plus proches en dernier.
+ * This function sorts faces in descending order of z_max depth
+ * to implement the painter's algorithm. The farthest faces
+ * (highest z_max) are placed first in the array to be
+ * drawn first, and the nearest ones last.
  * 
- * PARAMETRES:
- *   faces      : Tableau des faces a trier
- *   face_count : Nombre de faces
+ * PARAMETERS:
+ *   faces      : Array of faces to sort
+ *   face_count : Number of faces
  * 
- * ALGORITHMES:
- *   - Tri par insertion pour petites collections (< 10 faces) - O(n²) mais rapide
- *   - Tri rapide (quicksort) pour grandes collections - O(n log n) en moyenne
- *   - Detection des tableaux deja tries pour eviter le tri inutile - O(n)
+ * ALGORITHMS:
+ *   - Insertion sort for small collections (< 10 faces) - O(n²) but fast
+ *   - Quick sort (quicksort) for large collections - O(n log n) on average
+ *   - Already sorted array detection to avoid unnecessary sorting - O(n)
  * 
- * OPTIMISATIONS:
- *   - Seuil adaptatif selon la taille
- *   - Verification pre-tri pour tableaux deja ordonnes
- *   - Pivotage median-de-trois pour quicksort stable
+ * OPTIMIZATIONS:
+ *   - Adaptive threshold based on size
+ *   - Pre-sort verification for already ordered arrays
+ *   - Median-of-three pivoting for stable quicksort
  * 
  * NOTES:
- *   - Doit etre appelee APRES calculateFaceDepths()
- *   - Ordre de tri: z_max decroissant (plus eloigne vers plus proche)
+ *   - Must be called AFTER calculateFaceDepths()
+ *   - Sort order: descending z_max (farthest to nearest)
  */
 void sortFacesByDepth(Face3D* faces, int face_count) {
     int i;
@@ -1295,7 +1294,7 @@ void sortFacesByDepth(Face3D* faces, int face_count) {
         return;
     }
     
-    // Optimisation 1: Verifier si le tableau est deja trie (cas frequent en 3D)
+    // Optimization 1: Check if array is already sorted (common case in 3D)
     int already_sorted = 1;
     for (i = 0; i < face_count - 1; i++) {
         if (faces[i].z_max < faces[i + 1].z_max) {
@@ -1304,26 +1303,26 @@ void sortFacesByDepth(Face3D* faces, int face_count) {
         }
     }
     if (already_sorted) {
-        // printf("Tableau deja trie - optimisation activee\n");
-        return;  // Deja trie, pas de travail a faire
+        // printf("Array already sorted - optimization enabled\n");
+        return;  // Already sorted, no work to do
     }
     
-    // Optimisation 2: Choix algorithmique selon la taille
+    // Optimization 2: Algorithmic choice based on size
     if (face_count <= 10) {
-        // Tri par insertion optimise pour petites collections
-        printf("Tri insertion (petite collection: %d faces)\n", face_count);
+        // Insertion sort optimized for small collections
+        printf("Insertion sort (small collection: %d faces)\n", face_count);
         sortFacesByDepth_insertion(faces, face_count);
     } else {
-        // Tri rapide pour grandes collections
-        printf("Tri rapide (grande collection: %d faces)\n", face_count);
+        // Quick sort for large collections
+        printf("Quick sort (large collection: %d faces)\n", face_count);
         sortFacesByDepth_quicksort(faces, 0, face_count - 1);
     }
     
-    // Debug optionnel - afficher l'ordre de tri
+    // Optional debug - display sort order
     /*
-    printf("Ordre de tri des faces (plus eloigne -> plus proche):\n");
+    printf("Face sorting order (farthest -> nearest):\n");
     for (i = 0; i < face_count; i++) {
-        printf("  Position %d: Face avec z_max=%.2f\n", i + 1, faces[i].z_max);
+        printf("  Position %d: Face with z_max=%.2f\n", i + 1, faces[i].z_max);
     }
     */
 }
@@ -1452,7 +1451,7 @@ int partition_median3(Face3D* faces, int low, int high) {
     return j;
 }
 
-// Fonction pour dessiner les polygones avec QuickDraw
+// Function to draw polygons with QuickDraw
 void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_count) {
     int i, j;
     Handle polyHandle;
@@ -1465,127 +1464,127 @@ void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_
     Pattern pat;
   
     SetPenMode(0);
-    // Dessiner chaque face
+    // Draw each face
     for (i = 0; i < face_count; i++) {
-        // Dessiner toutes les faces avec au moins 3 vertices
+        // Draw all faces with at least 3 vertices
         if (faces[i].vertex_count >= 3) {
             
-            // Calculer la taille du polygone (en-tete + bbox + points)
+            // Calculate polygon size (header + bbox + points)
             int polySize = 2 + 8 + (faces[i].vertex_count * 4);
             
-            // Allouer la memoire pour le polygone
+            // Allocate memory for the polygon
             polyHandle = NewHandle((long)polySize, userid(), 0xC015, 0L);
             if (polyHandle != NULL) {
                 HLock(polyHandle);
                 poly = (DynamicPolygon *)*polyHandle;
                 
-                // Remplir la structure du polygone
+                // Fill polygon structure
                 poly->polySize = polySize;
                 
-                // Initialiser les bornes de la bounding box
+                // Initialize bounding box limits
                 min_x = max_x = min_y = max_y = -1;
                 
-                // Copier les points et calculer la bounding box
+                // Copy points and calculate bounding box
                 for (j = 0; j < faces[i].vertex_count; j++) {
-                    int vertex_idx = faces[i].vertex_indices[j] - 1; // Convertir base 1 vers base 0
+                    int vertex_idx = faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
                     
                     poly->polyPoints[j].h = mode / 320 * vertices[vertex_idx].x2d;
                     poly->polyPoints[j].v = vertices[vertex_idx].y2d;
                     
-                    // Mettre a jour la bounding box
+                    // Update bounding box
                     if (min_x == -1 || vertices[vertex_idx].x2d < min_x) min_x = vertices[vertex_idx].x2d;
                     if (max_x == -1 || vertices[vertex_idx].x2d > max_x) max_x = vertices[vertex_idx].x2d;
                     if (min_y == -1 || vertices[vertex_idx].y2d < min_y) min_y = vertices[vertex_idx].y2d;
                     if (max_y == -1 || vertices[vertex_idx].y2d > max_y) max_y = vertices[vertex_idx].y2d;
                 }
                 
-                // Definir la bounding box
+                // Define bounding box
                 poly->polyBBox.h1 = min_x;
                 poly->polyBBox.v1 = min_y;
                 poly->polyBBox.h2 = max_x;
                 poly->polyBBox.v2 = max_y;
                 
-                // Definir la couleur (cyclique pour varier les couleurs)
+                // Define color (cyclic to vary colors)
                 //SetSolidPenPat((i % 15) + 1);
 
-                // Dessiner le polygone
-                SetSolidPenPat(14);     // gris clair
+                // Draw the polygon
+                SetSolidPenPat(14);     // light gray
                 GetPenPat(pat);
                 FillPoly(polyHandle,pat);
-                SetSolidPenPat(7);      // rouge
+                SetSolidPenPat(7);      // red
                 FramePoly(polyHandle);
                 
-                // Nettoyer
+                // Cleanup
                 HUnlock(polyHandle);
                 DisposeHandle(polyHandle);
                 
                 valid_faces_drawn++;
             } else {
-                // printf("Erreur: Impossible d'allouer la memoire pour la face %d\n", i + 1);
+                // printf("Error: Cannot allocate memory for face %d\n", i + 1);
                 invalid_faces_skipped++;
             }
         } else {
-            // printf("Face %d ignoree (moins de 3 vertices: %d)\n", i + 1, faces[i].vertex_count);
+            // printf("Face %d ignored (less than 3 vertices: %d)\n", i + 1, faces[i].vertex_count);
             invalid_faces_skipped++;
         }
     }
     
-    // printf("=== RESUME DU RENDU ===\n");
-    // printf("Faces dessinees avec succes: %d\n", valid_faces_drawn);
-    // printf("Faces ignorees/invalides: %d\n", invalid_faces_skipped);
+    // printf("=== RENDERING SUMMARY ===\n");
+    // printf("Faces successfully drawn: %d\n", valid_faces_drawn);
+    // printf("Faces ignored/invalid: %d\n", invalid_faces_skipped);
     // printf("========================\n");
 }
 
 /**
- * SAUVEGARDE DES DONNEES DE DEBUG
- * ==============================
+ * DEBUG DATA SAVE
+ * ===============
  * 
- * Cette fonction sauvegarde toutes les donnees du modele 3D dans un fichier
- * texte pour permettre l'analyse des problemes d'affichage.
+ * This function saves all 3D model data to a text file
+ * to allow analysis of display problems.
  * 
- * CONTENU DU FICHIER DEBUG:
- * - Liste complete des vertices avec coordonnees 3D et 2D
- * - Liste complete des faces avec indices et coordonnees calculees
- * - Statistiques du modele
+ * DEBUG FILE CONTENT:
+ * - Complete vertex list with 3D and 2D coordinates
+ * - Complete face list with indices and calculated coordinates
+ * - Model statistics
  */
 void saveDebugData(Model3D* model, const char* debug_filename) {
     FILE *debug_file;
     int i, j;
     
-    // Ouvrir le fichier de debug en ecriture
+    // Open debug file for writing
     debug_file = fopen(debug_filename, "w");
     if (debug_file == NULL) {
-        printf("Erreur: Impossible de creer le fichier de debug '%s'\n", debug_filename);
+        printf("Error: Unable to create debug file '%s'\n", debug_filename);
         return;
     }
     
-    // printf("\n=== SAUVEGARDE DEBUG ===\n");
-    // printf("Ecriture dans: %s\n", debug_filename);
+    // printf("\n=== DEBUG SAVE ===\n");
+    // printf("Writing to: %s\n", debug_filename);
     
-    // En-tete du fichier
-    fprintf(debug_file, "=== DONNEES DE DEBUG DU MODELE 3D ===\n");
-    fprintf(debug_file, "Date de generation: %s", __DATE__);
+    // File header
+    fprintf(debug_file, "=== 3D MODEL DEBUG DATA ===\n");
+    fprintf(debug_file, "Generation date: %s", __DATE__);
     fprintf(debug_file, "\n\n");
     
-    // Statistiques generales
-    fprintf(debug_file, "=== STATISTIQUES ===\n");
-    fprintf(debug_file, "Vertices charges: %d\n", model->vertex_count);
-    fprintf(debug_file, "Faces chargees: %d\n", model->face_count);
+    // General statistics
+    fprintf(debug_file, "=== STATISTICS ===\n");
+    fprintf(debug_file, "Loaded vertices: %d\n", model->vertex_count);
+    fprintf(debug_file, "Loaded faces: %d\n", model->face_count);
     fprintf(debug_file, "\n");
     
-    // Analyse des faces par nombre de vertices
+    // Face analysis by vertex count
     int triangle_count = 0, quad_count = 0, other_count = 0;
     for (i = 0; i < model->face_count; i++) {
         if (model->faces[i].vertex_count == 3) triangle_count++;
         else if (model->faces[i].vertex_count == 4) quad_count++;
         else other_count++;
     }
-    fprintf(debug_file, "Triangles detectes: %d\n", triangle_count);
-    fprintf(debug_file, "Quadrilateres detectes: %d\n", quad_count);
-    fprintf(debug_file, "Autres polygones: %d\n", other_count);
+    fprintf(debug_file, "Triangles detected: %d\n", triangle_count);
+    fprintf(debug_file, "Quadrilaterals detected: %d\n", quad_count);
+    fprintf(debug_file, "Other polygons: %d\n", other_count);
     fprintf(debug_file, "\n");
     
-    // Liste complete des vertices
+    // Complete vertex list
     fprintf(debug_file, "=== VERTICES ===\n");
     fprintf(debug_file, "Format: Index | X3D Y3D Z3D | X2D Y2D\n");
     fprintf(debug_file, "--------------------------------------\n");
@@ -1597,7 +1596,7 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
     }
     fprintf(debug_file, "\n");
     
-    // Liste complete des faces
+    // Complete face list
     fprintf(debug_file, "=== FACES ===\n");
     for (i = 0; i < model->face_count; i++) {
         fprintf(debug_file, "Face F%03d (%d vertices):\n", i + 1, model->faces[i].vertex_count);
@@ -1608,42 +1607,42 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
         }
         fprintf(debug_file, "\n");
         
-        // Coordonnees 3D et 2D de chaque vertex de la face
-        fprintf(debug_file, "  Coordonnees:\n");
+        // 3D and 2D coordinates of each vertex of the face
+        fprintf(debug_file, "  Coordinates:\n");
         for (j = 0; j < model->faces[i].vertex_count; j++) {
-            int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Conversion base-1 vers base-0
+            int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Convert base-1 to base-0
             if (vertex_idx >= 0 && vertex_idx < model->vertex_count) {
                 fprintf(debug_file, "    V%d: 3D(%.3f, %.3f, %.3f) -> 2D(%d, %d)\n",
                         model->faces[i].vertex_indices[j],
                         model->vertices[vertex_idx].x, model->vertices[vertex_idx].y, model->vertices[vertex_idx].z,
                         model->vertices[vertex_idx].x2d, model->vertices[vertex_idx].y2d);
             } else {
-                fprintf(debug_file, "    V%d: ERREUR - Index hors limites!\n", model->faces[i].vertex_indices[j]);
+                fprintf(debug_file, "    V%d: ERROR - Index out of bounds!\n", model->faces[i].vertex_indices[j]);
             }
         }
         fprintf(debug_file, "\n");
     }
     
-    // Verification d'integrite
-    fprintf(debug_file, "=== VERIFICATION D'INTEGRITE ===\n");
+    // Integrity check
+    fprintf(debug_file, "=== INTEGRITY CHECK ===\n");
     int errors = 0;
     for (i = 0; i < model->face_count; i++) {
         for (j = 0; j < model->faces[i].vertex_count; j++) {
             int vertex_idx = model->faces[i].vertex_indices[j] - 1;
             if (vertex_idx < 0 || vertex_idx >= model->vertex_count) {
-                fprintf(debug_file, "ERREUR: Face F%d reference vertex V%d inexistant (index %d hors limites [1-%d])\n",
+                fprintf(debug_file, "ERROR: Face F%d references non-existent vertex V%d (index %d out of bounds [1-%d])\n",
                         i + 1, model->faces[i].vertex_indices[j], vertex_idx + 1, model->vertex_count);
                 errors++;
             }
         }
     }
     if (errors == 0) {
-        fprintf(debug_file, "Aucune erreur detectee - Tous les indices sont valides.\n");
+        fprintf(debug_file, "No errors detected - All indices are valid.\n");
     } else {
-        fprintf(debug_file, "TOTAL: %d erreurs detectees!\n", errors);
+        fprintf(debug_file, "TOTAL: %d errors detected!\n", errors);
     }
     
-    // Fermer le fichier
+    // Close file
     fclose(debug_file);
     // printf("Debug sauvegarde avec succes!\n");
     // printf("========================\n");
@@ -1652,7 +1651,7 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
 
 void DoColor() {
         Rect r;
-        unsigned char pstr[4];  // Chaîne Pascal: [longueur][caractères...]
+        unsigned char pstr[4];  // Pascal string: [length][characters...]
 
         SetRect (&r, 0, 10, mode / 320 *10, 20);
         for (int i = 0; i < 16; i++) {
@@ -1660,19 +1659,19 @@ void DoColor() {
             PaintRect(&r);
 
             if (i == 0) {
-                SetSolidPenPat(15); // Blanc pour le fond noir
+                SetSolidPenPat(15); // White for black background
                 FrameRect(&r);
             }
 
             MoveTo(r.h1, r.v2+10);
-            // Créer une chaîne Pascal pour afficher le numéro
+            // Create a Pascal string to display the number
             if (i < 10) {
-                pstr[0] = 1;           // Longueur: 1 caractère
-                pstr[1] = '0' + i;     // Le chiffre 0-9
+                pstr[0] = 1;           // Length: 1 character
+                pstr[1] = '0' + i;     // Digit 0-9
             } else {
-                pstr[0] = 2;           // Longueur: 2 caractères
-                pstr[1] = '0' + (i / 10);      // Dizaine (1 pour 10-15)
-                pstr[2] = '0' + (i % 10);      // Unité (0-5 pour 10-15)
+                pstr[0] = 2;           // Length: 2 characters
+                pstr[1] = '0' + (i / 10);      // Tens (1 for 10-15)
+                pstr[2] = '0' + (i % 10);      // Units (0-5 for 10-15)
             }
             DrawString(pstr);
             OffsetRect(&r, 20, 0);
@@ -1694,20 +1693,20 @@ int main() {
     char filename[100];
     char input[50];
     
-    printf("Lecture de fichier 3D\n");
+    printf("3D File Reader\n");
     printf("===================================\n\n");
     
     // Creer le modele 3D
     model = createModel3D();
     if (model == NULL) {
-        printf("Erreur: Impossible d'allouer la memoire pour le modele 3D\n");
+        printf("Error: Unable to allocate memory for 3D model\n");
         printf("Press any key to quit...\n");
         keypress();
         return 1;
     }
     
-    // Demander le nom du fichier
-    printf("Entrez le nom du fichier a lire: ");
+    // Ask for filename
+    printf("Enter the filename to read: ");
     if (fgets(filename, sizeof(filename), stdin) != NULL) {
         size_t len = strlen(filename);
         if (len > 0 && filename[len-1] == '\n') {
@@ -1717,7 +1716,7 @@ int main() {
     
     // Charger le modele 3D
     if (loadModel3D(model, filename) < 0) {
-        printf("\nErreur lors du chargement du fichier\n");
+        printf("\nError loading file\n");
         printf("Press any key to quit...\n");
         keypress();
         destroyModel3D(model);
@@ -1725,29 +1724,29 @@ int main() {
     }
     
     
-    // Obtenir les parametres de l'observateur
+    // Get observer parameters
     getObserverParams(&params);
     
     bigloop:
-    // Traiter le modele avec les parametres - VERSION OPTIMISEE
+    // Process model with parameters - OPTIMIZED VERSION
     processModelFast(model, &params);
     
 #if ENABLE_DEBUG_SAVE
-    // Sauvegarde debug (ATTENTION: très lente!)
+    // Debug save (WARNING: very slow!)
     saveDebugData(model, "debug.txt");
 #endif
     
-    // Afficher les informations et resultats
+    // Display information and results
     // displayModelInfo(model);
     // displayResults(model);
 
     loopReDraw:
     if (model->face_count > 0) {
-    // Initialiser QuickDraw
+    // Initialize QuickDraw
     startgraph(mode);
-    // Dessiner l'objet 3D
+    // Draw 3D object
     drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
-    // affiche les couleurs disponibles
+    // display available colors
     DoColor(); 
     keypress();
     }
@@ -1768,63 +1767,71 @@ loop:
         }
     sprintf(input, "You pressed key code: %d\n", key);
     printf("%s", input);
+    keypress();
+
+    // REDRAW : space bar
     if (key == 32) // space bar to redraw
         goto loopReDraw;
-    else if (key == 65 || key == 97) // 'A pour diminuer la distance
+
+
+    // DISTANCE : A/Z
+    else if (key == 65 || key == 97) // 'A' to decrease distance
     {
         params.distance = params.distance - (params.distance / 10); // just an example modification
         goto bigloop;
     }
-    else if (key == 90 || key == 122) // 'Z' pour augmenter la distance
+    else if (key == 90 || key == 122) // 'Z' to increase distance
     {
         params.distance = params.distance + (params.distance / 10); 
         goto bigloop;
     }
-    else if (key == 21 ) // fleche droite pour augmenter l'angle horizontal
+    
+    // ANGLES : right and left arrows to rotate horizontally
+    else if (key == 21 ) // right arrow to increase horizontal angle
     {
         params.angle_h = params.angle_h + 10; 
         goto bigloop;
     }
-    else if (key == 8) // fleche gauche pour diminuer l'angle horizontal
+    else if (key == 8) // left arrow to decrease horizontal angle
     {
         params.angle_h = params.angle_h - 10; 
         goto bigloop;
     }
-    else if (key == 10 ) // 'W' pour diminuer l'angle vertical
+
+    // ANGLES : up and down arrows to rotate vertically
+    else if (key == 10 ) // down arrow to decrease vertical angle
     {
         params.angle_v = params.angle_v - 10; 
         goto bigloop;
     }
-    else if (key == 11 ) // 'S' pour augmenter l'angle vertical
+    else if (key == 11 ) // up arrow to increase vertical angle
     {
         params.angle_v = params.angle_v + 10; 
         goto bigloop;
     }
-    else if (key == 8 ) // 
-    {
-        params.angle_v = params.angle_v - 10; 
-        goto bigloop;
-    }
-    else if (key == 87 || key == 119)  // 'w' pour diminuer l'angle de rotation de l'ecran
-    {
-        params.angle_w = params.angle_w - 10; 
-        goto bigloop;
-    }
-    else if (key == 88 || key == 120)  // 'x' pour augmenter l'angle de rotation de l'ecran
+
+     // SCREEN ROTATION ANGLE : W/X
+    else if (key == 87 || key == 119)  // 'w' to decrease screen rotation angle
     {
         params.angle_w = params.angle_w + 10; 
         goto bigloop;
     }
+    else if (key == 88 || key == 120)  // 'x' to increase screen rotation angle
+    {
+        params.angle_w = params.angle_w - 10; 
+        goto bigloop;
+    }
 
-    else if (key == 27) // 'ESC' pour quitter
+    // QUIT : ESC
+    else if (key == 27) // 'ESC' to quit
     {
         goto end;
-  }
+   }
 
-    else goto loopReDraw; // toutes les autres touches pour redessiner
+    else goto loopReDraw; // all other keys to redraw
 
     end:
-    // Nettoyage et fin
+    // Cleanup and exit
     destroyModel3D(model);
     return 0;
 }
