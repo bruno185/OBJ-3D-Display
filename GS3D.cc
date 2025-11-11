@@ -4,6 +4,7 @@
  * ============================================================================
  * 
  * 3D rendering program for Apple IIGS with ORCA/C
+ * Version 0.3 english
  * 
  * DESCRIPTION:
  *   This program reads 3D model files in simplified OBJ format,
@@ -1916,4 +1917,3 @@ newmodel:
     destroyModel3D(model);
     return 0;
 }
-
