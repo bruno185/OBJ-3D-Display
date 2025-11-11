@@ -1685,13 +1685,13 @@ void DoColor() {
         Rect r;
         unsigned char pstr[4];  // Pascal string: [length][characters...]
 
-        SetRect (&r, 0, 1, mode / 320 *10, 11);
+        SetRect (&r, 0, 10, mode / 320 *10, 20);
         for (int i = 0; i < 16; i++) {
             SetSolidPenPat(i);
             PaintRect(&r);
 
             if (i == 0) {
-                SetSolidPenPat(15); // White frame for black background
+                SetSolidPenPat(15); // White for black background
                 FrameRect(&r);
             }
 
@@ -1724,11 +1724,8 @@ int main() {
     ObserverParams params;
     char filename[100];
     char input[50];
-    int colorpalette = 0; // default color palette
     
-newmodel:
-    printf("===================================\n");
-    printf("       3D OBJ file viewer\n");
+    printf("3D File Reader\n");
     printf("===================================\n\n");
     
     // Creer le modele 3D
@@ -1758,12 +1755,12 @@ newmodel:
         return 1;
     }
     
+    
     // Get observer parameters
     getObserverParams(&params);
-
+    
     bigloop:
     // Process model with parameters - OPTIMIZED VERSION
-    printf("Processing model...\n");
     processModelFast(model, &params);
     
 #if ENABLE_DEBUG_SAVE
@@ -1777,139 +1774,93 @@ newmodel:
 
 
     loopReDraw:
-    {
-        int key = 0;
-        char input[50];
-        
-        if (model->face_count > 0) {
-            // Initialize QuickDraw
-            startgraph(mode);
-            // Draw 3D object
-            drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
-            // display available colors
-            if (colorpalette == 1) { 
-                DoColor(); 
-            }
+    if (model->face_count > 0) {
+    // Initialize QuickDraw
+    startgraph(mode);
+    // Draw 3D object
+    drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
+    // display available colors
+    DoColor(); 
+    }
+    int key = 0;
+    endgraph();
+    DoText();
 
-            // Wait for key press and get key code
-    asm 
+asm 
         {
+loop:
         sep #0x20
-    loop:
         lda >0xC000     // Read the keyboard status from memory address 0xC000
-        bpl loop        // Wait until no key is pressed (= until bit 7 on)
-        and #0x007f     // Clear the high bit
-        sta >0xC010     // Clear the keypress by writing to 0xC010
+        and #0x0080     // Check if the key is pressed (bit 7)
+        beq loop        // If not pressed, loop until a key is pressed
+        sta >0xC010     // Clear the keypress by writing back to 0xC010
         sta key         // Store the key code in variable 'key'
         rep #0x30
         }
-
-    endgraph();        // Close QuickDraw
-    }  // End of if (model->face_count > 0)
-    
-    DoText();           // Show text screen
-
-
-#if ENABLE_DEBUG_SAVE
     sprintf(input, "You pressed key code: %d\n", key);
     printf("%s", input);
-#endif
+    keypress();
+
+    // REDRAW : space bar
+    if (key == 32) // space bar to redraw
+        goto loopReDraw;
 
 
-    // Handle keyboard input with switch statement
-    switch (key) {
-        case 32:  // Space bar - display info and redraw
-            // Display some info about model and parameters
-            printf("===================================\n");
-            printf(" Model information and parameters\n");
-            printf("===================================\n");
-            printf("Model: %s\n", filename);
-            printf("Vertices: %d, Faces: %d\n", model->vertex_count, model->face_count);
-            printf("Observer Parameters:\n");
-            printf("    Distance: %.2f\n", params.distance);
-            printf("    Horizontal Angle: %.1f\n", params.angle_h);
-            printf("    Vertical Angle: %.1f\n", params.angle_v);
-            printf("    Screen Rotation Angle: %.1f\n", params.angle_w);
-            printf("===================================\n");
-            printf("\n");
-            printf("Press any key to continue...\n");
-            keypress();
-            goto loopReDraw;
-            
-        case 65:  // 'A' - decrease distance
-        case 97:  // 'a'
-            params.distance = params.distance - (params.distance / 10);
-            goto bigloop;
-            
-        case 90:  // 'Z' - increase distance  
-        case 122: // 'z'
-            params.distance = params.distance + (params.distance / 10);
-            goto bigloop;
-            
-        case 21:  // Right arrow - increase horizontal angle
-            params.angle_h = params.angle_h + 10;
-            goto bigloop;
-            
-        case 8:   // Left arrow - decrease horizontal angle
-            params.angle_h = params.angle_h - 10;
-            goto bigloop;
-            
-        case 10:  // Down arrow - decrease vertical angle
-            params.angle_v = params.angle_v - 10;
-            goto bigloop;
-            
-        case 11:  // Up arrow - increase vertical angle
-            params.angle_v = params.angle_v + 10;
-            goto bigloop;
-            
-        case 87:  // 'W' - increase screen rotation angle
-        case 119: // 'w'
-            params.angle_w = params.angle_w + 10;
-            goto bigloop;
-            
-        case 88:  // 'X' - decrease screen rotation angle
-        case 120: // 'x'
-            params.angle_w = params.angle_w - 10;
-            goto bigloop;
-        
-        case 67:  // 'C' - toggle color palette display
-        case 99:  // 'c'
-            colorpalette ^= 1; // Toggle between 0 and 1
-            goto loopReDraw;
-
-        case 78:  // 'N' - load new model
-        case 110: // 'n'
-            destroyModel3D(model);
-            goto newmodel;
-        
-        // dispaly help
-        case 72:  // 'H'
-        case 104: // 'h'
-            printf("===================================\n");
-            printf("    HELP - Keyboard Controller\n");
-            printf("===================================\n\n");
-            printf("Space: Display model info\n");
-            printf("A/Z: Increase/Decrease distance\n");
-            printf("Arrow Left/Right: Decrease/Increase horizontal angle\n");
-            printf("Arrow Up/Down: Increase/Decrease vertical angle\n");
-            printf("W/X: Increase/Decrease screen rotation angle\n");
-            printf("C: Toggle color palette display\n");
-            printf("N: Load new model\n");
-            printf("H: Display this help message\n");
-            printf("ESC: Quit program\n");
-            printf("===================================\n");
-            printf("\n");
-            printf("Press any key to continue...\n");
-            keypress();
-            goto loopReDraw;
-
-        case 27:  // ESC - quit
-            goto end;
-            
-        default:  // All other keys - redraw
-            goto loopReDraw;
+    // DISTANCE : A/Z
+    else if (key == 65 || key == 97) // 'A' to decrease distance
+    {
+        params.distance = params.distance - (params.distance / 10); // just an example modification
+        goto bigloop;
     }
-    }  // End of loopReDraw block
+    else if (key == 90 || key == 122) // 'Z' to increase distance
+    {
+        params.distance = params.distance + (params.distance / 10); 
+        goto bigloop;
+    }
+    
+    // ANGLES : right and left arrows to rotate horizontally
+    else if (key == 21 ) // right arrow to increase horizontal angle
+    {
+        params.angle_h = params.angle_h + 10; 
+        goto bigloop;
+    }
+    else if (key == 8) // left arrow to decrease horizontal angle
+    {
+        params.angle_h = params.angle_h - 10; 
+        goto bigloop;
+    }
+
+    // ANGLES : up and down arrows to rotate vertically
+    else if (key == 10 ) // down arrow to decrease vertical angle
+    {
+        params.angle_v = params.angle_v - 10; 
+        goto bigloop;
+    }
+    else if (key == 11 ) // up arrow to increase vertical angle
+    {
+        params.angle_v = params.angle_v + 10; 
+        goto bigloop;
+    }
+
+     // SCREEN ROTATION ANGLE : W/X
+    else if (key == 87 || key == 119)  // 'w' to decrease screen rotation angle
+    {
+        params.angle_w = params.angle_w + 10; 
+        goto bigloop;
+    }
+    else if (key == 88 || key == 120)  // 'x' to increase screen rotation angle
+    {
+        params.angle_w = params.angle_w - 10; 
+        goto bigloop;
+    }
+
+    // QUIT : ESC
+    else if (key == 27) // 'ESC' to quit
+    {
+        goto end;
+   }
+
+    else goto loopReDraw; // all other keys to redraw
 
     end:
     // Cleanup and exit
