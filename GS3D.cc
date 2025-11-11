@@ -110,6 +110,7 @@ typedef struct {
     int vertex_count;                           // Number of vertices in the face
     int vertex_indices[MAX_FACE_VERTICES];     // Vertex indices (base 1)
     Extended z_max;                            // Maximum depth of the face (for sorting, SANE)
+    int display_flag;                          // 1 = display face, 0 = don't display (behind camera)
 } Face3D;
 
 /**
@@ -1047,6 +1048,7 @@ int readFaces(const char* filename, Face3D* faces, int max_faces) {
                 // printf("%3d: %s", line_number, line);
                 
                 faces[face_count].vertex_count = 0;
+                faces[face_count].display_flag = 1;  // Initialize as displayable by default
                 
                 // Use a more robust approach than strtok
                 char *ptr = line + 2;  // Start after "f "
@@ -1213,23 +1215,41 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Extended angle_w) {
 }
 
 /**
- * CALCULATING MAXIMUM FACE DEPTHS
- * ================================
+ * CALCULATING MAXIMUM FACE DEPTHS AND VISIBILITY FLAGS
+ * =====================================================
  * 
- * This function calculates for each face the maximum depth (z_max)
- * of all its vertices in the observer coordinate system.
- * This value is used for face sorting during rendering
- * (painter's algorithm).
+ * This function calculates for each face:
+ * 1. The maximum depth (z_max) of all its vertices in the observer coordinate system
+ * 2. The display visibility flag based on vertex positions relative to camera
+ * 
+ * The z_max value is used for face sorting during rendering (painter's algorithm).
+ * The display_flag is used to cull faces that have vertices behind the camera.
  * 
  * PARAMETERS:
  *   vertices   : Array of vertices with coordinates in observer system
- *   faces      : Array of faces to process
+ *   faces      : Array of faces to process  
  *   face_count : Number of faces
  * 
+ * ALGORITHM:
+ *   For each face:
+ *   - Initialize z_max with very small value (-9999.0)
+ *   - Initialize display_flag as true (displayable)
+ *   - For each vertex of the face:
+ *     * Check if vertex is behind camera (zo <= 0)
+ *     * If ANY vertex is behind camera, set display_flag = false
+ *     * Update z_max with maximum zo value found
+ *   - Store both z_max and display_flag in the face structure
+ * 
+ * CULLING LOGIC:
+ *   - If ANY vertex has zo <= 0, the entire face is marked as non-displayable
+ *   - This prevents rendering artifacts from perspective projection errors
+ *   - Improves performance by eliminating faces early in the pipeline
+ * 
  * NOTES:
- *   - Must be called AFTER transformToObserver()
- *   - Uses zo coordinates (observer system)
+ *   - Must be called AFTER transformToObserver() or processModelFast()
+ *   - Uses zo coordinates (observer system depth)
  *   - Higher z_max value means face is farther away
+ *   - display_flag = 1 means visible, 0 means hidden (behind camera)
  */
 void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
     int i, j;
@@ -1237,6 +1257,7 @@ void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
     // For each face
     for (i = 0; i < face_count; i++) {
         Extended z_max = -9999.0;  // Initialize with very small value (SANE)
+        int display_flag = 1;      // Initialize as displayable (true)
         
         // Go through all vertices of this face
         for (j = 0; j < faces[i].vertex_count; j++) {
@@ -1244,6 +1265,11 @@ void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
             
             // Verify that index is valid (use reasonable number of vertices)
             if (vertex_idx >= 0) {
+                // Check if vertex is behind camera (zo <= 0)
+                if (vertices[vertex_idx].zo <= 0.0) {
+                    display_flag = 0;  // Don't display this face
+                }
+                
                 // Compare with zo coordinate (depth in observer system)
                 if (vertices[vertex_idx].zo > z_max) {
                     z_max = vertices[vertex_idx].zo;
@@ -1251,11 +1277,12 @@ void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
             }
         }
         
-        // Store maximum depth in the face
+        // Store maximum depth and display flag in the face
         faces[i].z_max = z_max;
+        faces[i].display_flag = display_flag;
         
         // Optional debug
-        // printf("Face %d: z_max = %.2f\n", i + 1, z_max);
+        // printf("Face %d: z_max = %.2f, display_flag = %d\n", i + 1, z_max, display_flag);
     }
 }
 
@@ -1466,6 +1493,11 @@ void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_
     SetPenMode(0);
     // Draw each face
     for (i = 0; i < face_count; i++) {
+        // Check if face should be displayed (not behind camera)
+        if (faces[i].display_flag == 0) {
+            continue;  // Skip faces with vertices behind camera (zo <= 0)
+        }
+        
         // Draw all faces with at least 3 vertices
         if (faces[i].vertex_count >= 3) {
             
@@ -1740,6 +1772,7 @@ int main() {
     // displayModelInfo(model);
     // displayResults(model);
 
+
     loopReDraw:
     if (model->face_count > 0) {
     // Initialize QuickDraw
@@ -1748,9 +1781,7 @@ int main() {
     drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
     // display available colors
     DoColor(); 
-    keypress();
     }
-
     int key = 0;
     endgraph();
     DoText();
@@ -1760,6 +1791,7 @@ asm
 loop:
         sep #0x20
         lda >0xC000     // Read the keyboard status from memory address 0xC000
+        and #0x0080     // Check if the key is pressed (bit 7)
         beq loop        // If not pressed, loop until a key is pressed
         sta >0xC010     // Clear the keypress by writing back to 0xC010
         sta key         // Store the key code in variable 'key'
