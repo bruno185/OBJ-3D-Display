@@ -1,27 +1,35 @@
 /*
  * ============================================================================
- *                              GO3D.CC
+ *                              GS3D.CC - SANE Reference Version
  * ============================================================================
  * 
  * 3D rendering program for Apple IIGS with ORCA/C
- * Version 0.3 english
+ * Version 0.4 english - SANE Extended Arithmetic
  * 
  * DESCRIPTION:
  *   This program reads 3D model files in simplified OBJ format,
  *   applies 3D geometric transformations (rotation, translation),
  *   projects the points on a 2D screen, and draws the resulting polygons
  *   using QuickDraw.
+ *   
+ *   This is the REFERENCE VERSION using Apple IIGS SANE Extended arithmetic
  * 
  * FEATURES:
  *   - Reading OBJ files (vertices "v" and faces "f")
- *   - 3D transformations to viewer system
+ *   - 3D transformations to viewer system using SANE Extended arithmetic
  *   - Perspective projection on 2D screen
  *   - Graphic rendering with QuickDraw
  *   - Interactive interface to modify parameters
+ *   - Performance measurements for comparison with Fixed32 optimized version
+ * 
+ * ARITHMETIC:
+ *   - SANE Extended (80-bit floating point)
+ *   - High precision but slower performance
+ *   - Reference for Fixed32 optimization comparison
  * 
  * AUTHOR: Bruno
  * DATE: 2025
- * PLATFORM: Apple IIGS - ORCA/C
+ * PLATFORM: Apple IIGS - ORCA/C with SANE numerics
  * ============================================================================
  */
 
@@ -47,7 +55,9 @@
 
 // Performance and debug configuration
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
-#define PERFORMANCE_MODE 1      // 1 = Optimized performance mode, 0 = Debug mode
+//#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
+// OPTIMIZATION: Performance mode - disable printf
+#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
 #define MAX_VERTICES 1000       // Maximum vertices in a 3D model
@@ -59,8 +69,7 @@
 //#define mode 640               // Graphics mode 640x200 pixels
 #define mode 320               // Graphics mode 320x200 pixels
 
-// OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
+
 
 // ============================================================================
 //                          DATA STRUCTURES
@@ -485,11 +494,11 @@ void displayModelInfo(Model3D* model);
 void displayResults(Model3D* model);
 
 /**
- * processModel
+ * processModelFast
  * 
  * DESCRIPTION:
  *   Executes the complete 3D transformation pipeline on a model:
- *   transformation to observer then 2D projection.
+ *   transformation to observer then 2D projection in one optimized pass.
  * 
  * PARAMETERS:
  *   model  : Model to process
@@ -677,7 +686,6 @@ void getObserverParams(ObserverParams* params) {
     printf("\nObserver parameters:\n");
     printf("============================\n");
     printf("(Press ENTER to use default values)\n");
-    printf("(Enter 'debug' to see values used)\n");
     
     // Input horizontal angle (rotation around Y)
     printf("Horizontal angle (degrees, default 30): ");
@@ -735,14 +743,7 @@ void getObserverParams(ObserverParams* params) {
         params->angle_w = 0.0;          // No rotation by default (SANE)
     }
     
-//     // DEBUG: Display the parameters finally used
-//     printf("\n=== PARAMETERS USED ===\n");
-//     printf("Horizontal angle: %.1f\n", params->angle_h);
-//     printf("Vertical angle: %.1f\n", params->angle_v);
-//     printf("Distance: %.1f\n", params->distance);
-//     printf("Screen angle: %.1f\n", params->angle_w);
-//     printf("==========================\n");
-//     keypress();
+
 }
 
 /**
@@ -842,35 +843,6 @@ void displayResults(Model3D* model) {
 }
 
 /**
- * COMPLETE 3D MODEL PROCESSING
- * ============================
- * 
- * This function executes the complete 3D transformation pipeline:
- * 1. Transformation to observer system
- * 2. Projection on 2D screen
- * 
- * It coordinates the two main stages of 3D rendering by
- * calling specialized functions in the correct order.
- */
-void processModel(Model3D* model, ObserverParams* params) {
-    // Step 1: 3D transformation to observer system
-    // Apply rotations and translation according to parameters
-    transformToObserver(model->vertices, model->vertex_count, 
-                       params->angle_h, params->angle_v, params->distance);
-    
-    // Step 1.5: Calculate maximum depths for each face (for Z-buffer sorting)
-    calculateFaceDepths(model->vertices, model->faces, model->face_count);
-    
-    // Step 1.6: Sort faces by depth (painter's algorithm)
-    sortFacesByDepth(model->faces, model->face_count);
-    // printf("Faces sorted by depth (%d faces)\n", model->face_count);
-    
-    // Step 2: Perspective projection on 2D screen
-    // 3D -> 2D conversion with perspective management
-    projectTo2D(model->vertices, model->vertex_count, params->angle_w);
-}
-
-/**
  * ULTRA-FAST FUNCTION: Combined Transformation + Projection
  * ==========================================================
  */
@@ -903,6 +875,11 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     const Extended centre_y_f = (Extended)CENTRE_Y;
     const Extended distance = params->distance;
     
+    // Mesure de performance pour la transformation + projection
+    long start_transform_ticks = GetTick();
+    
+
+    
     // Boucle unique transformation + projection
     for (i = 0; i < model->vertex_count; i++) {
         x = model->vertices[i].x;
@@ -911,6 +888,8 @@ void processModelFast(Model3D* model, ObserverParams* params) {
         
         // Transformation 3D
         zo = -x * cos_h_cos_v - y * sin_h_cos_v - z * sin_v + distance;
+        
+
         
         if (zo > 0.0f) {
             xo = -x * sin_h + y * cos_h;
@@ -938,9 +917,29 @@ void processModelFast(Model3D* model, ObserverParams* params) {
         }
     }
     
+    long end_transform_ticks = GetTick();
+    
     // Face sorting after transformation
+    long start_calc_ticks = GetTick();
     calculateFaceDepths(model->vertices, model->faces, model->face_count);
+    long end_calc_ticks = GetTick();
+    
+    long start_sort_ticks = GetTick();
     sortFacesByDepth(model->faces, model->face_count);
+    long end_sort_ticks = GetTick();
+    
+#if !PERFORMANCE_MODE
+    printf("Transform+Project: %ld ticks (%.2f ms)\n", 
+           end_transform_ticks - start_transform_ticks, 
+           (end_transform_ticks - start_transform_ticks) * 1000.0 / 60.0);
+    printf("calculateFaceDepths: %ld ticks (%.2f ms)\n", 
+           end_calc_ticks - start_calc_ticks, 
+           (end_calc_ticks - start_calc_ticks) * 1000.0 / 60.0);
+    printf("sortFacesByDepth: %ld ticks (%.2f ms)\n", 
+           end_sort_ticks - start_sort_ticks,
+           (end_sort_ticks - start_sort_ticks) * 1000.0 / 60.0);
+    keypress();
+#endif
 }
 
 // ============================================================================
@@ -1209,8 +1208,7 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Extended angle_w) {
             // Point behind observer, no projection
             vertices[i].x2d = -1;
             vertices[i].y2d = -1;
-            // printf("Vertex %3d: Behind observer (zo=%.2f)\n", 
-            //        i + 1, vertices[i].zo);
+
         }
     }
 }
@@ -1283,7 +1281,7 @@ void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
         faces[i].display_flag = display_flag;
         
         // Optional debug
-        // printf("Face %d: z_max = %.2f, display_flag = %d\n", i + 1, z_max, display_flag);
+
     }
 }
 
@@ -1346,13 +1344,7 @@ void sortFacesByDepth(Face3D* faces, int face_count) {
         sortFacesByDepth_quicksort(faces, 0, face_count - 1);
     }
     
-    // Optional debug - display sort order
-    /*
-    printf("Face sorting order (farthest -> nearest):\n");
-    for (i = 0; i < face_count; i++) {
-        printf("  Position %d: Face with z_max=%.2f\n", i + 1, faces[i].z_max);
-    }
-    */
+
 }
 
 /**
@@ -1364,15 +1356,11 @@ void sortFacesByDepth_insertion(Face3D* faces, int face_count) {
     Face3D temp_face;
     
     for (i = 1; i < face_count; i++) {
-        // Optimisation: verifier si l'element est deja a sa place
-        if (faces[i].z_max <= faces[i - 1].z_max) {
-            continue;  // Deja bien place
-        }
-        
         // Sauvegarder la face courante
         temp_face = faces[i];
         
         // Decaler les faces avec z_max plus petit vers la droite
+        // (tri décroissant: face la plus lointaine en premier)
         j = i - 1;
         while (j >= 0 && faces[j].z_max < temp_face.z_max) {
             faces[j + 1] = faces[j];
@@ -1562,10 +1550,7 @@ void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_
         }
     }
     
-    // printf("=== RENDERING SUMMARY ===\n");
-    // printf("Faces successfully drawn: %d\n", valid_faces_drawn);
-    // printf("Faces ignored/invalid: %d\n", invalid_faces_skipped);
-    // printf("========================\n");
+
 }
 
 /**
@@ -1591,8 +1576,7 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
         return;
     }
     
-    // printf("\n=== DEBUG SAVE ===\n");
-    // printf("Writing to: %s\n", debug_filename);
+
     
     // File header
     fprintf(debug_file, "=== 3D MODEL DEBUG DATA ===\n");
@@ -1677,8 +1661,7 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
     
     // Close file
     fclose(debug_file);
-    // printf("Debug sauvegarde avec succes!\n");
-    // printf("========================\n");
+
 }
 
 
@@ -1811,10 +1794,7 @@ newmodel:
     DoText();           // Show text screen
 
 
-#if ENABLE_DEBUG_SAVE
-    sprintf(input, "You pressed key code: %d\n", key);
-    printf("%s", input);
-#endif
+
 
 
     // Handle keyboard input with switch statement
