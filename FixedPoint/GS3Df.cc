@@ -1116,6 +1116,7 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     printf("sortFacesByDepth: %ld ticks (%.2f ms)\n", 
            end_sort_ticks - start_sort_ticks,
            (end_sort_ticks - start_sort_ticks) * 1000.0 / 60.0);
+    printf("\nHit a key to continue...\n");
     keypress();
 #endif
 }

@@ -929,16 +929,17 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     long end_sort_ticks = GetTick();
     
 #if !PERFORMANCE_MODE
-    printf("Transform+Project: %ld ticks (%.2f ms)\n", 
-           end_transform_ticks - start_transform_ticks, 
-           (end_transform_ticks - start_transform_ticks) * 1000.0 / 60.0);
-    printf("calculateFaceDepths: %ld ticks (%.2f ms)\n", 
-           end_calc_ticks - start_calc_ticks, 
-           (end_calc_ticks - start_calc_ticks) * 1000.0 / 60.0);
-    printf("sortFacesByDepth: %ld ticks (%.2f ms)\n", 
-           end_sort_ticks - start_sort_ticks,
-           (end_sort_ticks - start_sort_ticks) * 1000.0 / 60.0);
-    keypress();
+        printf("Transform+Project: %ld ticks (%.2f ms)\n", 
+                end_transform_ticks - start_transform_ticks, 
+                (end_transform_ticks - start_transform_ticks) * 1000.0 / 60.0);
+        printf("calculateFaceDepths: %ld ticks (%.2f ms)\n", 
+                end_calc_ticks - start_calc_ticks, 
+                (end_calc_ticks - start_calc_ticks) * 1000.0 / 60.0);
+        printf("sortFacesByDepth: %ld ticks (%.2f ms)\n", 
+            end_sort_ticks - start_sort_ticks,
+            (end_sort_ticks - start_sort_ticks) * 1000.0 / 60.0);
+        printf("\nHit a key to continue...\n");
+        keypress();
 #endif
 }
 
