@@ -60,6 +60,15 @@
 #include <window.h>     // Window management
 #include <orca.h>       // ORCA specific functions (startgraph, etc.)
 
+// --- Variable globale pour la vérification des indices de sommet dans readFaces ---
+// (Ajouté pour garantir la cohérence OBJ)
+int readVertices_last_count = 0;
+
+// --- Global persistent polygon handle for drawing ---
+// Allocated once, HLocked only during use, prevents repeated NewHandle/DisposeHandle
+static Handle globalPolyHandle = NULL;
+static int poly_handle_locked = 0;  // Track lock state
+
 // ============================================================================
 //                            FIXED POINT DEFINITIONS
 // ============================================================================
@@ -166,19 +175,17 @@ static const Fixed32 deg_to_rad_table[361] = {
 #define ENABLE_DEBUG_SAVE 0     // 1 = Enable debug save (SLOW!), 0 = Disable
 //#define PERFORMANCE_MODE 0      // 1 = Optimized performance mode, 0 = Debug mode
 // OPTIMIZATION: Performance mode - disable printf
-#define PERFORMANCE_MODE 0      // 1 = no printf, 0 = normal printf
+#define PERFORMANCE_MODE 1      // 1 = no printf, 0 = normal printf
 
 #define MAX_LINE_LENGTH 256     // Maximum file line size
-#define MAX_VERTICES 1000       // Maximum vertices in a 3D model
-#define MAX_FACES 1000          // Maximum faces in a 3D model
-#define MAX_FACE_VERTICES 20    // Maximum vertices per face (polygon)
+#define MAX_VERTICES 6000       // Maximum vertices in a 3D model
+#define MAX_FACES 6000          // Maximum faces in a 3D model (using parallel arrays)
+#define MAX_FACE_VERTICES 6     // Maximum vertices per face (triangles/quads/hexagons)
 #define PI 3.14159265359        // Mathematical constant Pi
 #define CENTRE_X 160            // Screen center in X (320/2)
 #define CENTRE_Y 100            // Screen center in Y (200/2)
 //#define mode 640               // Graphics mode 640x200 pixels
 #define mode 320               // Graphics mode 320x200 pixels
-
-
 
 // ============================================================================
 //                          DATA STRUCTURES
@@ -201,11 +208,57 @@ static const Fixed32 deg_to_rad_table[361] = {
  *   This structure preserves all transformation steps to
  *   allow debugging and recalculations without rereading the file.
  */
+
+
+// Parallel arrays for vertex data (to break 32K/64K struct limit)
 typedef struct {
-    Fixed32 x, y, z;       // Original coordinates from OBJ file (Fixed Point)
-    Fixed32 xo, yo, zo;    // Transformed coordinates (observer system)
-    int x2d, y2d;           // Projected coordinates on 2D screen (pixels)
-} Vertex3D;
+    Handle xHandle, yHandle, zHandle;
+    Handle xoHandle, yoHandle, zoHandle;
+    Handle x2dHandle, y2dHandle;
+    Fixed32 *x, *y, *z;
+    Fixed32 *xo, *yo, *zo;
+    int *x2d, *y2d;
+    int vertex_count;
+} VertexArrays3D;
+
+/**
+ * Structure FaceArrays3D - Compact dynamic face storage with depth-sorted rendering
+ * Each face stores ONLY the vertices it needs:
+ * - vertex_count: How many vertices this face has (3 for tri, 4 for quad, etc.)
+ * - vertex_indices_buffer: ONE packed buffer with all indices (NO WASTED SLOTS!)
+ * - vertex_indices_ptr: Offset array pointing to each face's slice in the buffer
+ * - sorted_face_indices: Array of face indices SORTED by depth (for painter's algorithm)
+ * - z_max: Depth for sorting
+ * - display_flag: Culling flag
+ * 
+ * MEMORY LAYOUT:
+ * Instead of 4 arrays of 6000 elements each, we use ONE packed buffer.
+ * Triangles (1538 faces × 3 indices) + Quads (2504 faces × 4 indices) = packed linearly
+ * Saves ~40-60% memory vs fixed 4 vertices/face
+ * 
+ * DEPTH SORTING STRATEGY:
+ * Instead of moving data around (complex with variable-length indices), we maintain
+ * sorted_face_indices[] which contains face numbers in depth order (farthest first).
+ * Drawing loop: for(i=0; i<face_count; i++) { int face_id = sorted_face_indices[i]; ... }
+ * This keeps the buffer untouched while providing correct rendering order.
+ */
+typedef struct {
+    Handle vertex_countHandle;           // 1 array: face_count × 4 bytes
+    Handle vertex_indicesBufferHandle;   // 1 buffer: all indices packed (NO WASTED SLOTS!)
+    Handle vertex_indicesPtrHandle;      // 1 array: offset to each face's indices
+    Handle z_maxHandle;                  // 1 array: face_count × 4 bytes
+    Handle display_flagHandle;           // 1 array: face_count × 4 bytes
+    Handle sorted_face_indicesHandle;    // 1 array: face numbers sorted by depth
+    
+    int *vertex_count;                   // Points to: [3, 3, 4, 3, 4, ...]
+    int *vertex_indices_buffer;          // Points to: [v1, v2, v3, v1, v2, v3, v4, v1, v2, v3, ...]
+    int *vertex_indices_ptr;             // Points to: [offset0, offset3, offset6, offset10, ...]
+    Fixed32 *z_max;
+    int *display_flag;
+    int *sorted_face_indices;            // Points to: [face_id1, face_id2, ...] sorted by z_max
+    int face_count;                      // Actual number of loaded faces
+    int total_indices;                   // Total indices across all faces (sum of all vertex_counts)
+} FaceArrays3D;
 
 /**
  * Structure Face3D
@@ -217,17 +270,17 @@ typedef struct {
  * 
  * FIELDS:
  *   vertex_count    : Number of vertices composing this face (3+ for polygon)
- *   vertex_indices  : Array of vertex indices (1-based numbering
- *                     as in the standard OBJ format)
+ *   vertex_indices  : Array of vertex indices (1-based numbering as in OBJ format)
  * 
  * NOTES:
  *   - Indices are stored in base 1 (first vertex = index 1)
  *   - Conversion to base 0 needed to access the C array
- *   - Maximum MAX_FACE_VERTICES vertices per face to prevent overflow
+ *   - Maximum MAX_FACE_VERTICES vertices per face (now 6 for triangles/quads/hexagons)
+ *   - LEGACY STRUCTURE: Now replaced by FaceArrays3D for parallel array storage
  */
 typedef struct {
     int vertex_count;                           // Number of vertices in the face
-    int vertex_indices[MAX_FACE_VERTICES];     // Vertex indices (base 1)
+    int vertex_indices[MAX_FACE_VERTICES];     // Vertex indices (base 1, max 6 for polygons)
     Fixed32 z_max;                             // Maximum depth of the face (for sorting, Fixed Point)
     int display_flag;                          // 1 = display face, 0 = don't display (behind camera)
 } Face3D;
@@ -310,10 +363,8 @@ typedef struct {
  *   destroyModel3D(model);
  */
 typedef struct {
-    Vertex3D *vertices;     // Dynamic vertex array of the model
-    Face3D *faces;          // Dynamic face array of the model
-    int vertex_count;       // Actual number of loaded vertices
-    int face_count;         // Actual number of loaded faces
+    VertexArrays3D vertices;          // Parallel arrays for all vertex data
+    FaceArrays3D faces;               // Parallel arrays for all face data
 } Model3D;
 
 // ============================================================================
@@ -357,7 +408,7 @@ Fixed32 cos_fixed(Fixed32 angle);
  *   v 1.234 5.678 9.012
  *   v -2.5 0.0 3.14
  */
-int readVertices(const char* filename, Vertex3D* vertices, int max_vertices);
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices);
 
 /**
  * readFaces
@@ -378,7 +429,6 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices);
  *   f 1 2 3        (triangle with vertices 1, 2, 3)
  *   f 4 5 6 7      (quadrilateral with vertices 4, 5, 6, 7)
  */
-int readFaces(const char* filename, Face3D* faces, int max_faces);
 
 /**
  * 3D GEOMETRIC TRANSFORMATION FUNCTIONS
@@ -412,8 +462,7 @@ int readFaces(const char* filename, Face3D* faces, int max_faces);
  * RESULTING COORDINATES:
  *   The xo, yo, zo fields of the vertices are updated.
  */
-void transformToObserver(Vertex3D* vertices, int vertex_count, 
-                        Fixed32 angle_h, Fixed32 angle_v, Fixed32 distance);
+void transformToObserver(VertexArrays3D* vtx, Fixed32 angle_h, Fixed32 angle_v, Fixed32 distance);
 
 /**
  * projectTo2D
@@ -437,7 +486,7 @@ void transformToObserver(Vertex3D* vertices, int vertex_count,
  * RESULTING COORDINATES:
  *   The x2d, y2d fields of the vertices contain the final screen coordinates.
  */
-void projectTo2D(Vertex3D* vertices, int vertex_count, Fixed32 angle_w);
+void projectTo2D(VertexArrays3D* vtx, Fixed32 angle_w);
 
 /**
  * GRAPHIC RENDERING FUNCTIONS
@@ -474,12 +523,13 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Fixed32 angle_w);
  *   - Faces with less than 3 visible vertices ignored
  *   - Off-screen vertices handled correctly
  */
-void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_count);
-void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count);
-void sortFacesByDepth(Face3D* faces, int face_count);
-void sortFacesByDepth_insertion(Face3D* faces, int face_count);
-void sortFacesByDepth_quicksort(Face3D* faces, int low, int high);
-void sortFacesByDepth_insertion_range(Face3D* faces, int low, int high);
+void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total);
+void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count);
+void sortFacesByDepth(Model3D* model, int face_count);
+void sortFacesByDepth_insertion(FaceArrays3D* faces, int face_count);
+void sortFacesByDepth_insertion_range(FaceArrays3D* faces, int low, int high);
+void sortFacesByDepth_quicksort(FaceArrays3D* faces, int low, int high);
+int sortFacesByDepth_partition(FaceArrays3D* faces, int low, int high);
 int partition_median3(Face3D* faces, int low, int high);
 
 // Function to save debug data to disk
@@ -626,7 +676,7 @@ void displayResults(Model3D* model);
  *   model  : Model to process
  *   params : Transformation parameters
  */
-void processModelFast(Model3D* model, ObserverParams* params);
+void processModelFast(Model3D* model, ObserverParams* params, const char* filename);
 
 // ============================================================================
 //                          FUNCTION IMPLEMENTATIONS
@@ -723,31 +773,184 @@ Model3D* createModel3D(void) {
     // Step 1: Main structure allocation
     Model3D* model = (Model3D*)malloc(sizeof(Model3D));
     if (model == NULL) {
-        return NULL;  // Main structure allocation failed
+        return NULL;
+    }
+    int n = MAX_VERTICES;
+    model->vertices.vertex_count = n;
+    
+    // Step 2: Allocate vertex arrays using malloc (handles bank crossing better)
+    // Note: malloc() should handle bank boundaries better than NewHandle()
+    model->vertices.x = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.y = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.z = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.xo = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.yo = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.zo = (Fixed32*)malloc(n * sizeof(Fixed32));
+    model->vertices.x2d = (int*)malloc(n * sizeof(int));
+    model->vertices.y2d = (int*)malloc(n * sizeof(int));
+    
+    if (!model->vertices.x || !model->vertices.y || !model->vertices.z ||
+        !model->vertices.xo || !model->vertices.yo || !model->vertices.zo ||
+        !model->vertices.x2d || !model->vertices.y2d) {
+        printf("Error: Unable to allocate memory for vertex arrays\n");
+        keypress();
+        // Allocation failed, cleanup
+        if (model->vertices.x) free(model->vertices.x);
+        if (model->vertices.y) free(model->vertices.y);
+        if (model->vertices.z) free(model->vertices.z);
+        if (model->vertices.xo) free(model->vertices.xo);
+        if (model->vertices.yo) free(model->vertices.yo);
+        if (model->vertices.zo) free(model->vertices.zo);
+        if (model->vertices.x2d) free(model->vertices.x2d);
+        if (model->vertices.y2d) free(model->vertices.y2d);
+        free(model);
+        return NULL;
     }
     
-    // Step 2: Vertex array allocation
-    // Size: MAX_VERTICES * sizeof(Vertex3D) bytes
-    model->vertices = (Vertex3D*)malloc(MAX_VERTICES * sizeof(Vertex3D));
-    if (model->vertices == NULL) {
-        free(model);  // Cleanup: free main structure
-        return NULL;  // Vertex array allocation failed
+    // Set dummy handles to NULL (not used with malloc)
+    model->vertices.xHandle = NULL;
+    model->vertices.yHandle = NULL;
+    model->vertices.zHandle = NULL;
+    model->vertices.xoHandle = NULL;
+    model->vertices.yoHandle = NULL;
+    model->vertices.zoHandle = NULL;
+    model->vertices.x2dHandle = NULL;
+    model->vertices.y2dHandle = NULL;
+    
+    // Step 3: Face array allocation using parallel arrays (like vertices)
+    // Each element stored separately to fit 32KB limit per allocation
+    int nf = MAX_FACES;
+    
+    // Allocate vertex count array: nf * 4 bytes = 24KB
+    model->faces.vertex_count = (int*)malloc(nf * sizeof(int));
+    if (!model->faces.vertex_count) {
+        printf("Error: Unable to allocate memory for face vertex_count array\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model);
+        return NULL;
     }
     
-    // Step 3: Face array allocation
-    // Size: MAX_FACES * sizeof(Face3D) bytes
-    model->faces = (Face3D*)malloc(MAX_FACES * sizeof(Face3D));
-    if (model->faces == NULL) {
-        free(model->vertices);  // Cleanup: free vertex array
-        free(model);            // Cleanup: free main structure
-        return NULL;            // Face array allocation failed
+    // Allocate SINGLE packed buffer for all vertex indices
+    // Estimate: average 3.5 indices per face (mix of triangles and quads)
+    // For 6000 faces: ~21KB. We allocate conservatively at 5 per face = 120KB max
+    int estimated_total_indices = nf * 5;
+    model->faces.vertex_indices_buffer = (int*)malloc(estimated_total_indices * sizeof(int));
+    if (!model->faces.vertex_indices_buffer) {
+        printf("Error: Unable to allocate memory for vertex_indices_buffer\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model->faces.vertex_count);
+        free(model);
+        return NULL;
     }
     
-    // Step 4: Counter initialization
-    model->vertex_count = 0;    // No vertices loaded initially
-    model->face_count = 0;      // No faces loaded initially
+    // Allocate offset array: one offset per face into the packed buffer
+    model->faces.vertex_indices_ptr = (int*)malloc(nf * sizeof(int));
+    if (!model->faces.vertex_indices_ptr) {
+        printf("Error: Unable to allocate memory for vertex_indices_ptr array\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model->faces.vertex_count);
+        free(model->faces.vertex_indices_buffer);
+        free(model);
+        return NULL;
+    }
     
-    return model;  // Success: return initialized model
+    // Allocate z_max array: nf * 4 bytes = 24KB
+    model->faces.z_max = (Fixed32*)malloc(nf * sizeof(Fixed32));
+    if (!model->faces.z_max) {
+        printf("Error: Unable to allocate memory for face z_max array\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model->faces.vertex_count);
+        free(model->faces.vertex_indices_buffer);
+        free(model->faces.vertex_indices_ptr);
+        free(model);
+        return NULL;
+    }
+    
+    // Allocate display_flag array: nf * 4 bytes = 24KB
+    model->faces.display_flag = (int*)malloc(nf * sizeof(int));
+    if (!model->faces.display_flag) {
+        printf("Error: Unable to allocate memory for face display_flag array\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model->faces.vertex_count);
+        free(model->faces.vertex_indices_buffer);
+        free(model->faces.vertex_indices_ptr);
+        free(model->faces.z_max);
+        free(model);
+        return NULL;
+    }
+    
+    // Initialize structure
+    model->faces.vertex_countHandle = NULL;
+    model->faces.vertex_indicesBufferHandle = NULL;
+    model->faces.vertex_indicesPtrHandle = NULL;
+    model->faces.z_maxHandle = NULL;
+    model->faces.display_flagHandle = NULL;
+    model->faces.sorted_face_indicesHandle = NULL;
+    model->faces.total_indices = 0;
+    
+    // Allocate sorted_face_indices array: nf * 4 bytes = 24KB max
+    model->faces.sorted_face_indices = (int*)malloc(nf * sizeof(int));
+    if (!model->faces.sorted_face_indices) {
+        printf("Error: Unable to allocate memory for sorted_face_indices array\n");
+        keypress();
+        free(model->vertices.x);
+        free(model->vertices.y);
+        free(model->vertices.z);
+        free(model->vertices.xo);
+        free(model->vertices.yo);
+        free(model->vertices.zo);
+        free(model->vertices.x2d);
+        free(model->vertices.y2d);
+        free(model->faces.vertex_count);
+        free(model->faces.vertex_indices_buffer);
+        free(model->faces.vertex_indices_ptr);
+        free(model->faces.z_max);
+        free(model->faces.display_flag);
+        free(model);
+        return NULL;
+    }
+    
+    return model;
 }
 
 /**
@@ -768,17 +971,24 @@ Model3D* createModel3D(void) {
  * - Selective cleanup based on successful allocations
  */
 void destroyModel3D(Model3D* model) {
-    // Check main pointer
     if (model != NULL) {
-        // Free vertex array (if allocated)
-        if (model->vertices != NULL) {
-            free(model->vertices);
-        }
+        // Free all vertex arrays
+        if (model->vertices.x) free(model->vertices.x);
+        if (model->vertices.y) free(model->vertices.y);
+        if (model->vertices.z) free(model->vertices.z);
+        if (model->vertices.xo) free(model->vertices.xo);
+        if (model->vertices.yo) free(model->vertices.yo);
+        if (model->vertices.zo) free(model->vertices.zo);
+        if (model->vertices.x2d) free(model->vertices.x2d);
+        if (model->vertices.y2d) free(model->vertices.y2d);
         
-        // Free face array (if allocated)
-        if (model->faces != NULL) {
-            free(model->faces);
-        }
+        // Free all face arrays (now simplified with packed buffer)
+        if (model->faces.vertex_count) free(model->faces.vertex_count);
+        if (model->faces.vertex_indices_buffer) free(model->faces.vertex_indices_buffer);
+        if (model->faces.vertex_indices_ptr) free(model->faces.vertex_indices_ptr);
+        if (model->faces.z_max) free(model->faces.z_max);
+        if (model->faces.display_flag) free(model->faces.display_flag);
+        if (model->faces.sorted_face_indices) free(model->faces.sorted_face_indices);
         
         // Free main structure
         free(model);
@@ -810,17 +1020,24 @@ int loadModel3D(Model3D* model, const char* filename) {
     }
     
     // Step 1: Read vertices from OBJ file
-    model->vertex_count = readVertices(filename, model->vertices, MAX_VERTICES);
-    if (model->vertex_count < 0) {
+    // --- MAJ du compteur global pour la vérification des indices de faces ---
+    readVertices_last_count = model->vertices.vertex_count;
+    
+    int vcount = readVertices(filename, &model->vertices, MAX_VERTICES);
+    if (vcount < 0) {
         return -1;  // Critical failure: unable to read vertices
     }
+    model->vertices.vertex_count = vcount;
     
-    // Step 2: Read faces from OBJ file
-    model->face_count = readFaces(filename, model->faces, MAX_FACES);
-    if (model->face_count < 0) {
-        // Critical failure: unable to read vertices
+    // Step 2: Read faces from OBJ file (using chunked allocation)
+    // This function handles reading faces into 2 chunks transparently
+    int fcount = readFaces_model(filename, model);
+    if (fcount < 0) {
+        // Critical failure: unable to read faces
         printf("\nWarning: Unable to read faces\n");
-        model->face_count = 0;  // No faces available
+        model->faces.face_count = 0;  // No faces available
+    } else {
+        model->faces.face_count = fcount;
     }
     
     return 0;  // Success: model loaded (with or without faces)
@@ -871,33 +1088,20 @@ void getObserverParams(ObserverParams* params) {
     }
     
     // Input vertical angle (rotation around X)  
-    printf("Vertical angle (degrees, default 15): ");
+    printf("Vertical angle (degrees, default 20): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
         // Remove newline
         input[strcspn(input, "\n")] = 0;
         if (strlen(input) == 0) {
-            params->angle_v = FLOAT_TO_FIXED(15.0);     // Default value if ENTER (Fixed Point)
+            params->angle_v = FLOAT_TO_FIXED(20.0);     // Default value if ENTER (Fixed Point)
         } else {
             params->angle_v = FLOAT_TO_FIXED(atof(input));  // String->Fixed32 conversion
         }
     } else {
-        params->angle_v = FLOAT_TO_FIXED(15.0);         // Default value if error (Fixed Point)
+        params->angle_v = FLOAT_TO_FIXED(20.0);         // Default value if error (Fixed Point)
     }
     
-    // Input observation distance (zoom/perspective)
-    printf("Distance (default 10): ");
-    if (fgets(input, sizeof(input), stdin) != NULL) {
-        // Remove newline
-        input[strcspn(input, "\n")] = 0;
-        if (strlen(input) == 0) {
-            params->distance = FLOAT_TO_FIXED(10.0);    // Default value if ENTER (Fixed Point)
-        } else {
-            params->distance = FLOAT_TO_FIXED(atof(input)); // String->Fixed32 conversion
-        }
-    } else {
-        params->distance = FLOAT_TO_FIXED(10.0);        // Default distance: balanced view (Fixed Point)
-    }
-    
+
     // Input screen rotation angle (final 2D rotation)
     printf("Screen rotation angle (degrees, default 0): ");
     if (fgets(input, sizeof(input), stdin) != NULL) {
@@ -911,15 +1115,20 @@ void getObserverParams(ObserverParams* params) {
     } else {
         params->angle_w = FLOAT_TO_FIXED(0.0);          // No rotation by default (Fixed Point)
     }
-    
-//     // DEBUG: Display the parameters finally used
-//     printf("\n=== PARAMETERS USED ===\n");
-//     printf("Horizontal angle: %.1f\n", params->angle_h);
-//     printf("Vertical angle: %.1f\n", params->angle_v);
-//     printf("Distance: %.1f\n", params->distance);
-//     printf("Screen angle: %.1f\n", params->angle_w);
-//     printf("==========================\n");
-//     keypress();
+
+    // Input observation distance (zoom/perspective)
+    printf("Distance (default 30): ");
+    if (fgets(input, sizeof(input), stdin) != NULL) {
+        // Remove newline
+        input[strcspn(input, "\n")] = 0;
+        if (strlen(input) == 0) {
+            params->distance = FLOAT_TO_FIXED(30.0);    // Default value if ENTER (Fixed Point)
+        } else {
+            params->distance = FLOAT_TO_FIXED(atof(input)); // String->Fixed32 conversion
+        }
+    } else {
+        params->distance = FLOAT_TO_FIXED(30.0);        // Default distance: balanced view (Fixed Point)
+    }
 }
 
 /**
@@ -933,10 +1142,10 @@ void getObserverParams(ObserverParams* params) {
  * completed correctly.
  */
 void displayModelInfo(Model3D* model) {
-    printf("\nAnalysis summary:\n");
-    printf("====================\n");
-    printf("Number of vertices (3D points) found: %d\n", model->vertex_count);
-    printf("Number of faces found: %d\n", model->face_count);
+    // printf("\nAnalysis summary:\n");
+    // printf("====================\n");
+    // printf("Number of vertices (3D points) found: %d\n", model->vertices.vertex_count);
+    // printf("Number of faces found: %d\n", model->faces.face_count);
 }
 
 /**
@@ -954,67 +1163,50 @@ void displayModelInfo(Model3D* model) {
  */
 void displayResults(Model3D* model) {
     int i, j;
+    VertexArrays3D* vtx = &model->vertices;
+    // printf("\nComplete coordinates (Original -> 3D -> 2D):\n");
+    // printf("-----------------------------------------------\n");
+    // for (i = 0; i < vtx->vertex_count; i++) {
+    //     if (vtx->x2d[i] >= 0 && vtx->y2d[i] >= 0) {
+    //         printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (%d,%d)\n",
+    //                i + 1,
+    //                FIXED_TO_FLOAT(vtx->x[i]), FIXED_TO_FLOAT(vtx->y[i]), FIXED_TO_FLOAT(vtx->z[i]),
+    //                FIXED_TO_FLOAT(vtx->xo[i]), FIXED_TO_FLOAT(vtx->yo[i]), FIXED_TO_FLOAT(vtx->zo[i]),
+    //                vtx->x2d[i], vtx->y2d[i]);
+    //     } else {
+    //         printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (invisible)\n",
+    //                i + 1,
+    //                FIXED_TO_FLOAT(vtx->x[i]), FIXED_TO_FLOAT(vtx->y[i]), FIXED_TO_FLOAT(vtx->z[i]),
+    //                FIXED_TO_FLOAT(vtx->xo[i]), FIXED_TO_FLOAT(vtx->yo[i]), FIXED_TO_FLOAT(vtx->zo[i]));
+    //     }
+    // }
     
-    // Display vertices if present
-    if (model->vertex_count > 0) {
-        printf("\nComplete coordinates (Original -> 3D -> 2D):\n");
-        printf("-----------------------------------------------\n");
-        
-        // Go through all vertices
-        for (i = 0; i < model->vertex_count; i++) {
-            // Check if vertex is visible on screen
-            if (model->vertices[i].x2d >= 0 && model->vertices[i].y2d >= 0) {
-                // Visible vertex: display all coordinates
-                printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (%d,%d)\n", 
-                       i + 1,  // Base-1 numbering for user
-                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Original
-                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo,  // Transformed
-                       model->vertices[i].x2d, model->vertices[i].y2d);                      // Projected 2D
-            } else {
-                // Invisible vertex (behind observer or off screen)
-                printf("  Vertex %3d: (%.2f,%.2f,%.2f) -> (%.2f,%.2f,%.2f) -> (invisible)\n", 
-                       i + 1,  // Base-1 numbering for user
-                       model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,     // Original
-                       model->vertices[i].xo, model->vertices[i].yo, model->vertices[i].zo); // Transformed
-            }
-        }
-    }
-    
-    // Display faces if present
-    if (model->face_count > 0) {
-        printf("\nFace list:\n");
-        printf("----------------\n");
-        
-        // Go through all faces
-        for (i = 0; i < model->face_count; i++) {
-            printf("  Face %3d (%d vertices, z_max=%.2f): ", i + 1, model->faces[i].vertex_count, model->faces[i].z_max);
-            
-            // Display vertex indices of this face
-            for (j = 0; j < model->faces[i].vertex_count; j++) {
-                printf("%d", model->faces[i].vertex_indices[j]); // Index base 1
-                if (j < model->faces[i].vertex_count - 1) printf("-"); // Separator
-            }
-            printf("\n");
-            
-            // Detailed display of vertex coordinates of this face
-            printf("       Coordinates of vertices of this face:\n");
-            for (j = 0; j < model->faces[i].vertex_count; j++) {
-                int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
-                if (vertex_idx >= 0 && vertex_idx < model->vertex_count) {
-                    printf("         Vertex %d: (%.2f,%.2f,%.2f) -> (%d,%d)\n",
-                           model->faces[i].vertex_indices[j], // Original index base 1
-                           model->vertices[vertex_idx].x, model->vertices[vertex_idx].y, model->vertices[vertex_idx].z,
-                           model->vertices[vertex_idx].x2d, model->vertices[vertex_idx].y2d);
+    if (model->faces.face_count > 0) {
+        // printf("\nFace list:\n");
+        // printf("----------------\n");
+        for (i = 0; i < model->faces.face_count; i++) {
+            // printf("  Face %3d (%d vertices, z_max=%.2f): ", i + 1, model->faces.vertex_count[i], FIXED_TO_FLOAT(model->faces.z_max[i]));
+            int offset = model->faces.vertex_indices_ptr[i];
+            // for (j = 0; j < model->faces.vertex_count[i]; j++) {
+            //     printf("%d", model->faces.vertex_indices_buffer[offset + j]);
+            //     if (j < model->faces.vertex_count[i] - 1) printf("-");
+            // }
+            // printf("\n");
+            // printf("       Coordinates of vertices of this face:\n");
+            for (j = 0; j < model->faces.vertex_count[i]; j++) {
+                int vertex_idx = model->faces.vertex_indices_buffer[offset + j] - 1;
+                if (vertex_idx >= 0 && vertex_idx < vtx->vertex_count) {
+                    // printf("         Vertex %d: (%.2f,%.2f,%.2f) -> (%d,%d)\n",
+                    //     model->faces.vertex_indices_buffer[offset + j],
+                    //     FIXED_TO_FLOAT(vtx->x[vertex_idx]), FIXED_TO_FLOAT(vtx->y[vertex_idx]), FIXED_TO_FLOAT(vtx->z[vertex_idx]),
+                    //     vtx->x2d[vertex_idx], vtx->y2d[vertex_idx]);
                 } else {
-                    printf("         Vertex %d: ERROR - Index out of bounds!\n", 
-                           model->faces[i].vertex_indices[j]);
+                    // printf("         Vertex %d: ERROR - Index out of bounds!\n", model->faces.vertex_indices_buffer[offset + j]);
                 }
             }
-            printf("\n");
+            // printf("\n");
         }
-        
-        // Launch graphic rendering (if faces available)
-        drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
+        drawPolygons(model, model->faces.vertex_count, model->faces.face_count, vtx->vertex_count);
     }
 }
 
@@ -1022,7 +1214,7 @@ void displayResults(Model3D* model) {
  * ULTRA-FAST FUNCTION: Combined Transformation + Projection
  * ==========================================================
  */
-void processModelFast(Model3D* model, ObserverParams* params) {
+void processModelFast(Model3D* model, ObserverParams* params, const char* filename) {
     int i;
     Fixed32 rad_h, rad_v, rad_w;
     Fixed32 cos_h, sin_h, cos_v, sin_v, cos_w, sin_w;
@@ -1056,42 +1248,34 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     long start_transform_ticks = GetTick();
     
     // 100% Fixed32 loop - ZERO conversions, maximum speed!
-    for (i = 0; i < model->vertex_count; i++) {
-        // Direct Fixed32 access - no conversions
-        x = model->vertices[i].x;
-        y = model->vertices[i].y;
-        z = model->vertices[i].z;
-        
+    VertexArrays3D* vtx = &model->vertices;
+    
+    for (i = 0; i < vtx->vertex_count; i++) {
+        x = vtx->x[i];
+        y = vtx->y[i];
+        z = vtx->z[i];
         // 3D transformation in pure Fixed32 (64-bit multiply)
         Fixed32 term1 = FIXED_MUL_64(x, cos_h_cos_v);
         Fixed32 term2 = FIXED_MUL_64(y, sin_h_cos_v);
         Fixed32 term3 = FIXED_MUL_64(z, sin_v);
-        
         zo = FIXED_ADD(FIXED_SUB(FIXED_SUB(FIXED_NEG(term1), term2), term3), distance);
-        
         if (zo > 0) {
             xo = FIXED_ADD(FIXED_NEG(FIXED_MUL_64(x, sin_h)), FIXED_MUL_64(y, cos_h));
             yo = FIXED_ADD(FIXED_SUB(FIXED_NEG(FIXED_MUL_64(x, cos_h_sin_v)), FIXED_MUL_64(y, sin_h_sin_v)), FIXED_MUL_64(z, cos_v));
-            
-            // Store results (all Fixed32 - no conversions)
-            model->vertices[i].zo = zo;
-            model->vertices[i].xo = xo;
-            model->vertices[i].yo = yo;
-            
-            // 2D projection in pure Fixed32 (64-bit division)
+            vtx->zo[i] = zo;
+            vtx->xo[i] = xo;
+            vtx->yo[i] = yo;
             inv_zo = FIXED_DIV_64(scale, zo);
             x2d_temp = FIXED_ADD(FIXED_MUL_64(xo, inv_zo), centre_x_f);
             y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
-            
-            // Final rotation in pure Fixed32 (64-bit multiply) - optimized
-            model->vertices[i].x2d = FIXED_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
-            model->vertices[i].y2d = FIXED_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
+            vtx->x2d[i] = FIXED_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
+            vtx->y2d[i] = FIXED_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
         } else {
-            model->vertices[i].zo = zo;
-            model->vertices[i].xo = 0;
-            model->vertices[i].yo = 0;
-            model->vertices[i].x2d = -1;
-            model->vertices[i].y2d = -1;
+            vtx->zo[i] = zo;
+            vtx->xo[i] = 0;
+            vtx->yo[i] = 0;
+            vtx->x2d[i] = -1;
+            vtx->y2d[i] = -1;
         }
     }
     
@@ -1099,11 +1283,16 @@ void processModelFast(Model3D* model, ObserverParams* params) {
     
     // Face sorting after transformation
     long start_calc_ticks = GetTick();
-    calculateFaceDepths(model->vertices, model->faces, model->face_count);
+    calculateFaceDepths(model, NULL, model->faces.face_count);
     long end_calc_ticks = GetTick();
     
+    // CRITICAL: Reset sorted_face_indices before each sort to prevent corruption
+    for (i = 0; i < model->faces.face_count; i++) {
+        model->faces.sorted_face_indices[i] = i;
+    }
+    
     long start_sort_ticks = GetTick();
-    sortFacesByDepth(model->faces, model->face_count);
+    sortFacesByDepth(model, model->faces.face_count);
     long end_sort_ticks = GetTick();
     
 #if !PERFORMANCE_MODE
@@ -1150,7 +1339,7 @@ void processModelFast(Model3D* model, ObserverParams* params) {
  * - Array overflow protection
  * - Coordinate format validation
  */
-int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
+int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
     int line_number = 1;
@@ -1159,40 +1348,46 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
     // Open file in read mode
     file = fopen(filename, "r");
     if (file == NULL) {
+        printf("[DEBUG] readVertices: fopen failed\n");
         printf("Error: Unable to open file '%s'\n", filename);
         printf("Check that the file exists and you have read permissions.\n");
         return -1;  // Return -1 on error
     }
     
-    printf("\nFile contents '%s':\n", filename);
-    printf("========================\n\n");
+    printf("\nReading vertices from file...'%s':\n", filename);
     
     // Read file line by line
     while (fgets(line, sizeof(line), file) != NULL) {
         // printf("%3d: %s", line_number, line);
-        
-        // Check if line starts with "v " (vertex - standard OBJ format)
         if (line[0] == 'v' && line[1] == ' ') {
+            //printf("[DEBUG] readVertices: found vertex line %d\n", line_number);
             if (vertex_count < max_vertices) {
                 float x, y, z;  // Temporary reading in float
-                // Extract coordinates x, y, z
                 if (sscanf(line + 2, "%f %f %f", &x, &y, &z) == 3) {
-                    // Convert to Fixed32 for fixed-point arithmetic
-                    vertices[vertex_count].x = FLOAT_TO_FIXED(x);
-                    vertices[vertex_count].y = FLOAT_TO_FIXED(y);
-                    vertices[vertex_count].z = FLOAT_TO_FIXED(z);
+                    vtx->x[vertex_count] = FLOAT_TO_FIXED(x);
+                    vtx->y[vertex_count] = FLOAT_TO_FIXED(y);
+                    vtx->z[vertex_count] = FLOAT_TO_FIXED(z);
                     vertex_count++;
-                    // printf("     -> Vertex %d: (%.3f, %.3f, %.3f)\n", 
-                    //        vertex_count, x, y, z);
+                    if (vertex_count % 10 == 0) printf("..");
+                //     FILE *vlog = fopen("vertexlog.txt", "a");
+                //     if (vlog) {
+                //         fprintf(vlog, "vertex_count=%d\n", vertex_count);
+                //         fclose(vlog);
+                //}
+                } else {
+                    printf("[\nDEBUG] readVertices: sscanf failed at line %d: %s\n", line_number, line);
+                    keypress();
                 }
             } else {
-                printf("     -> WARNING: Vertex limit reached (%d)\n", max_vertices);
+                printf("\n[DEBUG] readVertices: vertex limit reached (%d)\n", max_vertices);
+                keypress();
             }
         }
-        
         line_number++;
     }
-    
+    printf("\n");
+    printf("Reading vertices finished : %d vertices read.\n", vertex_count);
+
     // Close file
     fclose(file);
     
@@ -1200,41 +1395,49 @@ int readVertices(const char* filename, Vertex3D* vertices, int max_vertices) {
     return vertex_count;  // Return the number of vertices read
 }
 
-// Function to read faces from a 3D file
-int readFaces(const char* filename, Face3D* faces, int max_faces) {
+// Function to read faces into parallel arrays in FaceArrays3D structure
+int readFaces_model(const char* filename, Model3D* model) {
     FILE *file;
     char line[MAX_LINE_LENGTH];
-    char *token;
     int line_number = 1;
     int face_count = 0;
     int i;
+    
+    // Validate model structure
+    if (model == NULL || model->faces.vertex_count == NULL) {
+        printf("Error: Invalid model structure for readFaces_model\n");
+        return -1;
+    }
     
     // Open file in read mode
     file = fopen(filename, "r");
     if (file == NULL) {
         printf("Error: Unable to open file '%s' to read faces\n", filename);
-        return -1;  // Return -1 on error
+        return -1;
     }
     
-    printf("\nReading faces from file '%s':\n", filename);
-    printf("==================================\n\n");
+    printf("\nReading faces from file '%s' :\n", filename);
+    
+    int buffer_pos = 0;  // Current position in the packed buffer
     
     // Read file line by line
     while (fgets(line, sizeof(line), file) != NULL) {
         // Check if line starts with "f " (face)
         if (line[0] == 'f' && line[1] == ' ') {
-            if (face_count < max_faces) {
-                // printf("%3d: %s", line_number, line);
+            if (face_count < MAX_FACES) {
+                // Initialize face data
+                model->faces.vertex_count[face_count] = 0;
+                model->faces.display_flag[face_count] = 1;  // Displayable by default
+                model->faces.vertex_indices_ptr[face_count] = buffer_pos;  // Store offset to this face's indices
                 
-                faces[face_count].vertex_count = 0;
-                faces[face_count].display_flag = 1;  // Initialize as displayable by default
-                
-                // Use a more robust approach than strtok
+                // Parse vertices from this face
                 char *ptr = line + 2;  // Start after "f "
-                faces[face_count].vertex_count = 0;
+                int temp_indices[MAX_FACE_VERTICES];
+                int temp_vertex_count = 0;
+                int invalid_index_found = 0;
                 
-                // Analyze character by character
-                while (*ptr != '\0' && *ptr != '\n' && faces[face_count].vertex_count < MAX_FACE_VERTICES) {
+                // Parse character by character
+                while (*ptr != '\0' && *ptr != '\n' && temp_vertex_count < MAX_FACE_VERTICES) {
                     // Skip spaces and tabs
                     while (*ptr == ' ' || *ptr == '\t') ptr++;
                     
@@ -1252,31 +1455,41 @@ int readFaces(const char* filename, Face3D* faces, int max_faces) {
                         ptr++;
                     }
                     
-                    // Verify that index is valid (base 1, so >= 1)
+                    // Validate vertex index
                     if (vertex_index >= 1) {
-                        faces[face_count].vertex_indices[faces[face_count].vertex_count] = vertex_index;
-                        faces[face_count].vertex_count++;
-                        // printf("  -> Vertex index read: %d\n", vertex_index);
-                    } else if (vertex_index > 0) {  // vertex_index == 0 means no number was read
-                        printf("     -> WARNING: Invalid vertex index %d ignored\n", vertex_index);
+                        if (vertex_index > readVertices_last_count) {
+                            // Index out of bounds
+                            invalid_index_found = 1;
+                        }
+                        temp_indices[temp_vertex_count] = vertex_index;
+                        temp_vertex_count++;
                     }
                 }
                 
-                // printf("     -> Face %d: %d vertices (", face_count + 1, faces[face_count].vertex_count);
-                // for (i = 0; i < faces[face_count].vertex_count; i++) {
-                //     printf("%d", faces[face_count].vertex_indices[i]);
-                //     if (i < faces[face_count].vertex_count - 1) printf(",");
-                // }
-                // printf(")\n");
-                
-                // Additional validation: if vertex count = 0, ignore this face
-                if (faces[face_count].vertex_count == 0) {
-                    printf("     -> WARNING: Face without valid vertices ignored\n");
+                // Check for errors
+                if (invalid_index_found) {
+                    printf("\nERROR: Face at line %d references vertex index > %d vertices\n", 
+                           line_number, readVertices_last_count);
+                    fclose(file);
+                    return -1;
                 } else {
-                    face_count++;
+                    // Store valid indices into the packed buffer
+                    for (i = 0; i < temp_vertex_count; i++) {
+                        model->faces.vertex_indices_buffer[buffer_pos++] = temp_indices[i];
+                    }
+                    model->faces.vertex_count[face_count] = temp_vertex_count;
+                    model->faces.total_indices += temp_vertex_count;
+                    
+                    // Skip faces with zero vertices
+                    if (model->faces.vertex_count[face_count] > 0) {
+                        face_count++;
+                        if (face_count % 10 == 0) {printf(".");}
+                    } else {
+                        printf("     -> WARNING: Face without valid vertices ignored\n");
+                    }
                 }
             } else {
-                printf("     -> WARNING: Face limit reached (%d)\n", max_faces);
+                printf("     -> WARNING: Face limit reached (%d)\n", MAX_FACES);
             }
         }
         
@@ -1286,34 +1499,31 @@ int readFaces(const char* filename, Face3D* faces, int max_faces) {
     // Close file
     fclose(file);
     
-    // printf("\n\nFace analysis complete. %d faces read.\n", face_count);
-    return face_count;  // Return number of faces read
+    model->faces.face_count = face_count;
+    
+    // Initialize sorted_face_indices with identity mapping (will be sorted later)
+    for (i = 0; i < face_count; i++) {
+        model->faces.sorted_face_indices[i] = i;
+    }
+    
+    printf("\nReading faces finished : %d faces read.\n", face_count);
+    return face_count;
 }
-
-// Function to transform coordinates to observer system
-void transformToObserver(Vertex3D* vertices, int vertex_count, 
-                        Fixed32 angle_h, Fixed32 angle_v, Fixed32 distance) {
+void transformToObserver(VertexArrays3D* vtx, Fixed32 angle_h, Fixed32 angle_v, Fixed32 distance) {
     int i;
     Fixed32 rad_h, rad_v;
     Fixed32 cos_h, sin_h, cos_v, sin_v;
     Fixed32 x, y, z;
-    
-    // Convert angles from degrees to radians (Fixed Point)
     rad_h = FIXED_MUL_64(angle_h, FIXED_PI_180);
     rad_v = FIXED_MUL_64(angle_v, FIXED_PI_180);
-    
-    // Pre-calculate trigonometric values using fixed-point functions
     cos_h = cos_fixed(rad_h);
     sin_h = sin_fixed(rad_h);
     cos_v = cos_fixed(rad_v);
     sin_v = sin_fixed(rad_v);
-    
-    // OPTIMIZATION: Pre-calculate trigonometric products (Fixed Point 64-bit)
     Fixed32 cos_h_cos_v = FIXED_MUL_64(cos_h, cos_v);
     Fixed32 sin_h_cos_v = FIXED_MUL_64(sin_h, cos_v);
     Fixed32 cos_h_sin_v = FIXED_MUL_64(cos_h, sin_v);
     Fixed32 sin_h_sin_v = FIXED_MUL_64(sin_h, sin_v);
-    
 #if !PERFORMANCE_MODE
     printf("\nTransformation to observer system (Fixed Point):\n");
     printf("Horizontal angle: %.1f degrees\n", FIXED_TO_FLOAT(angle_h));
@@ -1321,118 +1531,75 @@ void transformToObserver(Vertex3D* vertices, int vertex_count,
     printf("Distance: %.3f\n", FIXED_TO_FLOAT(distance));
     printf("==========================================\n");
 #endif
-    
-    // Transform each vertex - OPTIMIZED VERSION
-    for (i = 0; i < vertex_count; i++) {
-        // Access coordinates directly
-        x = vertices[i].x;
-        y = vertices[i].y;
-        z = vertices[i].z;
-        
-        // OPTIMIZATION: Use pre-calculated products with 64-bit arithmetic
-        vertices[i].zo = FIXED_ADD(
-            FIXED_SUB(
-                FIXED_SUB(
-                    FIXED_MUL_64(-x, cos_h_cos_v),
-                    FIXED_MUL_64(y, sin_h_cos_v)
-                ),
-                FIXED_MUL_64(z, sin_v)
-            ),
-            distance
+    for (i = 0; i < vtx->vertex_count; i++) {
+        x = vtx->x[i];
+        y = vtx->y[i];
+        z = vtx->z[i];
+        vtx->xo[i] = FIXED_ADD(
+            FIXED_MUL_64(x, cos_h_cos_v),
+            FIXED_MUL_64(y, sin_h_cos_v)
         );
-        vertices[i].xo = FIXED_ADD(FIXED_MUL_64(-x, sin_h), FIXED_MUL_64(y, cos_h));
-        vertices[i].yo = FIXED_ADD(
+        vtx->yo[i] = FIXED_ADD(
             FIXED_SUB(
                 FIXED_MUL_64(-x, cos_h_sin_v),
                 FIXED_MUL_64(y, sin_h_sin_v)
             ),
             FIXED_MUL_64(z, cos_v)
         );
-        
-        // printf("Vertex %3d: (%.3f,%.3f,%.3f) -> (%.3f,%.3f,%.3f)\n", 
-        //        i + 1, x, y, z, vertices[i].xo, vertices[i].yo, vertices[i].zo);
+        vtx->zo[i] = FIXED_ADD(
+            FIXED_ADD(
+                FIXED_MUL_64(-x, sin_h),
+                FIXED_MUL_64(-y, cos_h)
+            ),
+            distance
+        );
     }
 }
 
 // Function to project 3D coordinates onto 2D screen - FIXED POINT VERSION
-void projectTo2D(Vertex3D* vertices, int vertex_count, Fixed32 angle_w) {
+void projectTo2D(VertexArrays3D* vtx, Fixed32 angle_w) {
     int i;
     Fixed32 rad_w;
     Fixed32 cos_w, sin_w;
     Fixed32 x2d_temp, y2d_temp;
-    
-    // Convert angle from degrees to radians (Fixed Point)
     rad_w = FIXED_MUL_64(angle_w, FIXED_PI_180);
-    
-    // Pre-calculate trigonometric values (Fixed Point)
     cos_w = cos_fixed(rad_w);
     sin_w = sin_fixed(rad_w);
-    
-    // OPTIMIZATION: Pre-calculate constants (Fixed Point)
     const Fixed32 scale = INT_TO_FIXED(100);
     const Fixed32 centre_x_f = INT_TO_FIXED(CENTRE_X);
     const Fixed32 centre_y_f = INT_TO_FIXED(CENTRE_Y);
-    
 #if !PERFORMANCE_MODE
     printf("\nProjection on 2D screen (Fixed Point):\n");
     printf("Rotation angle: %.1f degrees\n", FIXED_TO_FLOAT(angle_w));
     printf("Screen center: (%d, %d)\n", CENTRE_X, CENTRE_Y);
     printf("===========================\n");
 #endif
-    
-    // Project each vertex - OPTIMIZED VERSION
-    for (i = 0; i < vertex_count; i++) {
-        // OPTIMIZATION: Visibility test first
-        if (vertices[i].zo > 0) {
-            // OPTIMIZATION: Single division per vertex (Fixed Point 64-bit)
-            Fixed32 inv_zo = FIXED_DIV_64(scale, vertices[i].zo);
-            
-            // Optimized perspective projection (Fixed Point)
-            x2d_temp = FIXED_ADD(FIXED_MUL_64(vertices[i].xo, inv_zo), centre_x_f);
-            y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(vertices[i].yo, inv_zo));
-            
-            // OPTIMIZATION: Rotation without temporary variable (Fixed Point)
-            vertices[i].x2d = FIXED_TO_INT(
-                FIXED_ADD(
-                    FIXED_SUB(
-                        FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)),
-                        FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))
-                    ),
-                    centre_x_f
-                )
-            );
-            vertices[i].y2d = FIXED_TO_INT(
-                FIXED_SUB(
-                    centre_y_f,
-                    FIXED_ADD(
-                        FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)),
-                        FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp))
-                    )
-                )
-            );
-            
-            // printf("Vertex %3d: 3D(%.2f,%.2f,%.2f) -> 2D(%d,%d)\n", 
-            //        i + 1, vertices[i].xo, vertices[i].yo, vertices[i].zo, 
-            //        vertices[i].x2d, vertices[i].y2d);
+    for (i = 0; i < vtx->vertex_count; i++) {
+        if (vtx->zo[i] > 0) {
+            Fixed32 xo = vtx->xo[i];
+            Fixed32 yo = vtx->yo[i];
+            Fixed32 inv_zo = FIXED_DIV_64(scale, vtx->zo[i]);
+            x2d_temp = FIXED_ADD(FIXED_MUL_64(xo, inv_zo), centre_x_f);
+            y2d_temp = FIXED_SUB(centre_y_f, FIXED_MUL_64(yo, inv_zo));
+            vtx->x2d[i] = FIXED_TO_INT(FIXED_ADD(FIXED_SUB(FIXED_MUL_64(cos_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(sin_w, FIXED_SUB(centre_y_f, y2d_temp))), centre_x_f));
+            vtx->y2d[i] = FIXED_TO_INT(FIXED_SUB(centre_y_f, FIXED_ADD(FIXED_MUL_64(sin_w, FIXED_SUB(x2d_temp, centre_x_f)), FIXED_MUL_64(cos_w, FIXED_SUB(centre_y_f, y2d_temp)))));
         } else {
-            // Point behind observer, no projection
-            vertices[i].x2d = -1;
-            vertices[i].y2d = -1;
-            // printf("Vertex %3d: Behind observer (zo=%.2f)\n", 
-            //        i + 1, vertices[i].zo);
+            vtx->x2d[i] = -1;
+            vtx->y2d[i] = -1;
         }
     }
 }
 
 /**
- * CALCULATING MAXIMUM FACE DEPTHS AND VISIBILITY FLAGS
+ * CALCULATING MINIMUM FACE DEPTHS AND VISIBILITY FLAGS
  * =====================================================
  * 
  * This function calculates for each face:
- * 1. The maximum depth (z_max) of all its vertices in the observer coordinate system
+ * 1. The minimum depth (z_min) of all its vertices in the observer coordinate system
  * 2. The display visibility flag based on vertex positions relative to camera
  * 
- * The z_max value is used for face sorting during rendering (painter's algorithm).
+ * The z_min value is used for face sorting during rendering (painter's algorithm).
+ * We use minimum (closest point) for correct occlusion in the painter's algorithm.
  * The display_flag is used to cull faces that have vertices behind the camera.
  * 
  * PARAMETERS:
@@ -1442,13 +1609,13 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Fixed32 angle_w) {
  * 
  * ALGORITHM:
  *   For each face:
- *   - Initialize z_max with very small value (-9999.0)
+ *   - Initialize z_min with very large value (9999.0)
  *   - Initialize display_flag as true (displayable)
  *   - For each vertex of the face:
  *     * Check if vertex is behind camera (zo <= 0)
  *     * If ANY vertex is behind camera, set display_flag = false
- *     * Update z_max with maximum zo value found
- *   - Store both z_max and display_flag in the face structure
+ *     * Update z_min with minimum zo value found (closest vertex)
+ *   - Store both z_min and display_flag in the face structure
  * 
  * CULLING LOGIC:
  *   - If ANY vertex has zo <= 0, the entire face is marked as non-displayable
@@ -1458,41 +1625,29 @@ void projectTo2D(Vertex3D* vertices, int vertex_count, Fixed32 angle_w) {
  * NOTES:
  *   - Must be called AFTER transformToObserver() or processModelFast()
  *   - Uses zo coordinates (observer system depth)
- *   - Higher z_max value means face is farther away
+ *   - Lower z_min value means face is closer to camera (should draw first in painter's algorithm)
  *   - display_flag = 1 means visible, 0 means hidden (behind camera)
  */
-void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
+void calculateFaceDepths(Model3D* model, Face3D* faces, int face_count) {
     int i, j;
+    VertexArrays3D* vtx = &model->vertices;
+    FaceArrays3D* face_arrays = &model->faces;
     
-    // For each face
     for (i = 0; i < face_count; i++) {
-        Fixed32 z_max = FLOAT_TO_FIXED(-9999.0);  // Initialize with very small value (Fixed Point)
-        int display_flag = 1;      // Initialize as displayable (true)
+        Fixed32 z_min = FLOAT_TO_FIXED(9999.0);  // Initialize to very large value
+        int display_flag = 1;
         
-        // Go through all vertices of this face
-        for (j = 0; j < faces[i].vertex_count; j++) {
-            int vertex_idx = faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
-            
-            // Verify that index is valid (use reasonable number of vertices)
+        // Access indices from the packed buffer using the offset
+        int offset = face_arrays->vertex_indices_ptr[i];
+        for (j = 0; j < face_arrays->vertex_count[i]; j++) {
+            int vertex_idx = face_arrays->vertex_indices_buffer[offset + j] - 1;
             if (vertex_idx >= 0) {
-                // Check if vertex is behind camera (zo <= 0)
-                if (vertices[vertex_idx].zo <= 0) {
-                    display_flag = 0;  // Don't display this face
-                }
-                
-                // Compare with zo coordinate (depth in observer system)
-                if (vertices[vertex_idx].zo > z_max) {
-                    z_max = vertices[vertex_idx].zo;
-                }
+                if (vtx->zo[vertex_idx] <= 0) display_flag = 0;
+                if (vtx->zo[vertex_idx] < z_min) z_min = vtx->zo[vertex_idx];  // Find minimum (closest)
             }
         }
-        
-        // Store maximum depth and display flag in the face
-        faces[i].z_max = z_max;
-        faces[i].display_flag = display_flag;
-        
-        // Optional debug
-        // printf("Face %d: z_max = %.2f, display_flag = %d\n", i + 1, z_max, display_flag);
+        face_arrays->z_max[i] = z_min;  // Store minimum depth for sorting
+        face_arrays->display_flag[i] = display_flag;
     }
 }
 
@@ -1523,174 +1678,153 @@ void calculateFaceDepths(Vertex3D* vertices, Face3D* faces, int face_count) {
  *   - Must be called AFTER calculateFaceDepths()
  *   - Sort order: descending z_max (farthest to nearest)
  */
-void sortFacesByDepth(Face3D* faces, int face_count) {
-    int i;
+void sortFacesByDepth(Model3D* model, int face_count) {
+    // Sort faces by z_max in descending order (farthest to nearest)
+    // Optimized: insertion sort for small arrays, quicksort for large
     
-    // Cas trivial: 0 ou 1 face
     if (face_count <= 1) {
         return;
     }
     
-    // Optimization 1: Check if array is already sorted (common case in 3D)
-    int already_sorted = 1;
-    for (i = 0; i < face_count - 1; i++) {
-        if (faces[i].z_max < faces[i + 1].z_max) {
-            already_sorted = 0;
-            break;
-        }
-    }
-    if (already_sorted) {
-        // printf("Array already sorted - optimization enabled\n");
-        return;  // Already sorted, no work to do
-    }
+    FaceArrays3D* faces = &model->faces;
     
-    // Optimization 2: Algorithmic choice based on size
-    if (face_count <= 10) {
-        // Insertion sort optimized for small collections
-        printf("Insertion sort (small collection: %d faces)\n", face_count);
+    // For small arrays (<=16), use insertion sort (faster due to low overhead)
+    if (face_count <= 16) {
         sortFacesByDepth_insertion(faces, face_count);
     } else {
-        // Quick sort for large collections
-        printf("Quick sort (large collection: %d faces)\n", face_count);
+        // For larger arrays, use quicksort
         sortFacesByDepth_quicksort(faces, 0, face_count - 1);
     }
-    
-    // Optional debug - display sort order
-    /*
-    printf("Face sorting order (farthest -> nearest):\n");
-    for (i = 0; i < face_count; i++) {
-        printf("  Position %d: Face with z_max=%.2f\n", i + 1, faces[i].z_max);
-    }
-    */
 }
 
+// Helper macro to swap face indices in the sorted_face_indices array
+// (We swap indices, not the faces themselves, to keep the buffer intact)
+#define SWAP_FACE(faces, i, j) \
+    do { \
+        int temp_idx = faces->sorted_face_indices[i]; \
+        faces->sorted_face_indices[i] = faces->sorted_face_indices[j]; \
+        faces->sorted_face_indices[j] = temp_idx; \
+    } while (0)
+
 /**
- * TRI PAR INSERTION OPTIMISE (pour petites collections)
- * =====================================================
+ * Insertion sort for small arrays (optimized for sorted_face_indices)
+ * Now we sort indices by comparing their depth values (z_max)
  */
-void sortFacesByDepth_insertion(Face3D* faces, int face_count) {
+void sortFacesByDepth_insertion(FaceArrays3D* faces, int face_count) {
     int i, j;
-    Face3D temp_face;
     
     for (i = 1; i < face_count; i++) {
-        // Optimisation: verifier si l'element est deja a sa place
-        if (faces[i].z_max <= faces[i - 1].z_max) {
-            continue;  // Deja bien place
+        int face_i = faces->sorted_face_indices[i];
+        int face_prev = faces->sorted_face_indices[i - 1];
+        
+        // If already in order (descending), skip
+        if (faces->z_max[face_i] <= faces->z_max[face_prev]) {
+            continue;
         }
         
-        // Sauvegarder la face courante
-        temp_face = faces[i];
-        
-        // Decaler les faces avec z_max plus petit vers la droite
+        // Find insertion position
         j = i - 1;
-        while (j >= 0 && faces[j].z_max < temp_face.z_max) {
-            faces[j + 1] = faces[j];
+        while (j >= 0) {
+            int face_j = faces->sorted_face_indices[j];
+            if (faces->z_max[face_j] >= faces->z_max[face_i]) break;
+            // Shift index right
+            SWAP_FACE(faces, j + 1, j);
             j--;
         }
         
-        // Inserer la face courante a sa position
-        faces[j + 1] = temp_face;
+        // Insert at position j+1
+        faces->sorted_face_indices[j + 1] = face_i;
     }
 }
 
 /**
- * TRI RAPIDE OPTIMISE (pour grandes collections)
- * ==============================================
+ * Quicksort for large arrays
  */
-void sortFacesByDepth_quicksort(Face3D* faces, int low, int high) {
+void sortFacesByDepth_quicksort(FaceArrays3D* faces, int low, int high) {
     if (low < high) {
-        // Optimisation: basculer vers tri par insertion pour petites partitions
-        if (high - low + 1 <= 8) {
+        // For small partitions, use insertion sort
+        if (high - low <= 16) {
             sortFacesByDepth_insertion_range(faces, low, high);
             return;
         }
         
-        // Partition avec median-de-trois pour ameliorer les performances
-        int pivot_index = partition_median3(faces, low, high);
-        
-        // Recursion sur les deux partitions
+        // Partition and recursively sort
+        int pivot_index = sortFacesByDepth_partition(faces, low, high);
         sortFacesByDepth_quicksort(faces, low, pivot_index - 1);
         sortFacesByDepth_quicksort(faces, pivot_index + 1, high);
     }
 }
 
 /**
- * TRI PAR INSERTION SUR UNE PLAGE (helper pour quicksort)
- * =======================================================
+ * Insertion sort for a range (used by quicksort)
  */
-void sortFacesByDepth_insertion_range(Face3D* faces, int low, int high) {
+void sortFacesByDepth_insertion_range(FaceArrays3D* faces, int low, int high) {
     int i, j;
-    Face3D temp_face;
     
     for (i = low + 1; i <= high; i++) {
-        if (faces[i].z_max <= faces[i - 1].z_max) {
-            continue;  // Deja bien place
+        int face_i = faces->sorted_face_indices[i];
+        int face_prev = faces->sorted_face_indices[i - 1];
+        
+        if (faces->z_max[face_i] <= faces->z_max[face_prev]) {
+            continue;
         }
         
-        temp_face = faces[i];
         j = i - 1;
-        while (j >= low && faces[j].z_max < temp_face.z_max) {
-            faces[j + 1] = faces[j];
+        while (j >= low) {
+            int face_j = faces->sorted_face_indices[j];
+            if (faces->z_max[face_j] >= faces->z_max[face_i]) break;
+            // Shift index right
+            SWAP_FACE(faces, j + 1, j);
             j--;
         }
-        faces[j + 1] = temp_face;
+        
+        // Insert at position j+1
+        faces->sorted_face_indices[j + 1] = face_i;
     }
 }
 
 /**
- * PARTITION AVEC MEDIAN-DE-TROIS (pour quicksort stable)
- * ======================================================
+ * Partition function for quicksort (median-of-three pivot)
  */
-int partition_median3(Face3D* faces, int low, int high) {
+int sortFacesByDepth_partition(FaceArrays3D* faces, int low, int high) {
+    // Median-of-three for better pivot selection
     int mid = low + (high - low) / 2;
-    Face3D temp;
     
-    // Median-de-trois: organiser faces[low], faces[mid], faces[high]
-    if (faces[mid].z_max > faces[high].z_max) {
-        temp = faces[mid]; faces[mid] = faces[high]; faces[high] = temp;
+    int face_low = faces->sorted_face_indices[low];
+    int face_mid = faces->sorted_face_indices[mid];
+    int face_high = faces->sorted_face_indices[high];
+    
+    if (faces->z_max[face_low] < faces->z_max[face_mid]) {
+        SWAP_FACE(faces, low, mid);
     }
-    if (faces[low].z_max > faces[high].z_max) {
-        temp = faces[low]; faces[low] = faces[high]; faces[high] = temp;
+    if (faces->z_max[faces->sorted_face_indices[low]] < faces->z_max[face_high]) {
+        SWAP_FACE(faces, low, high);
     }
-    if (faces[mid].z_max > faces[low].z_max) {
-        temp = faces[mid]; faces[mid] = faces[low]; faces[low] = temp;
+    if (faces->z_max[faces->sorted_face_indices[mid]] < faces->z_max[faces->sorted_face_indices[high]]) {
+        SWAP_FACE(faces, mid, high);
     }
     
-    // Utiliser faces[low] comme pivot (median des trois)
-    Extended pivot = faces[low].z_max;
-    int i = low;
-    int j = high + 1;
+    // Use median (now at low) as pivot
+    Fixed32 pivot = faces->z_max[faces->sorted_face_indices[low]];
+    SWAP_FACE(faces, low, high);  // Move pivot to end
     
-    while (1) {
-        // Trouver element a gauche plus petit que pivot
-        do {
+    int i = low - 1;
+    for (int j = low; j < high; j++) {
+        if (faces->z_max[faces->sorted_face_indices[j]] >= pivot) {  // Descending order
             i++;
-        } while (i <= high && faces[i].z_max > pivot);
-        
-        // Trouver element a droite plus grand que pivot
-        do {
-            j--;
-        } while (faces[j].z_max < pivot);
-        
-        if (i >= j) break;
-        
-        // Echanger faces[i] et faces[j]
-        temp = faces[i];
-        faces[i] = faces[j];
-        faces[j] = temp;
+            SWAP_FACE(faces, i, j);
+        }
     }
     
-    // Placer le pivot a sa position finale
-    temp = faces[low];
-    faces[low] = faces[j];
-    faces[j] = temp;
-    
-    return j;
+    SWAP_FACE(faces, i + 1, high);  // Move pivot to final position
+    return i + 1;
 }
 
 // Function to draw polygons with QuickDraw
-void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_count) {
+void drawPolygons(Model3D* model, int* vertex_count, int face_count, int vertex_count_total) {
     int i, j;
+    VertexArrays3D* vtx = &model->vertices;
+    FaceArrays3D* faces = &model->faces;
     Handle polyHandle;
     DynamicPolygon *poly;
     int min_x, max_x, min_y, max_y;
@@ -1699,84 +1833,104 @@ void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_
     int triangle_count = 0;
     int quad_count = 0;
     Pattern pat;
-  
-    SetPenMode(0);
-    // Draw each face
-    for (i = 0; i < face_count; i++) {
-        // Check if face should be displayed (not behind camera)
-        if (faces[i].display_flag == 0) {
-            continue;  // Skip faces with vertices behind camera (zo <= 0)
-        }
-        
-        // Draw all faces with at least 3 vertices
-        if (faces[i].vertex_count >= 3) {
-            
-            // Calculate polygon size (header + bbox + points)
-            int polySize = 2 + 8 + (faces[i].vertex_count * 4);
-            
-            // Allocate memory for the polygon
-            polyHandle = NewHandle((long)polySize, userid(), 0xC015, 0L);
-            if (polyHandle != NULL) {
-                HLock(polyHandle);
-                poly = (DynamicPolygon *)*polyHandle;
-                
-                // Fill polygon structure
-                poly->polySize = polySize;
-                
-                // Initialize bounding box limits
-                min_x = max_x = min_y = max_y = -1;
-                
-                // Copy points and calculate bounding box
-                for (j = 0; j < faces[i].vertex_count; j++) {
-                    int vertex_idx = faces[i].vertex_indices[j] - 1; // Convert base 1 to base 0
-                    
-                    poly->polyPoints[j].h = mode / 320 * vertices[vertex_idx].x2d;
-                    poly->polyPoints[j].v = vertices[vertex_idx].y2d;
-                    
-                    // Update bounding box
-                    if (min_x == -1 || vertices[vertex_idx].x2d < min_x) min_x = vertices[vertex_idx].x2d;
-                    if (max_x == -1 || vertices[vertex_idx].x2d > max_x) max_x = vertices[vertex_idx].x2d;
-                    if (min_y == -1 || vertices[vertex_idx].y2d < min_y) min_y = vertices[vertex_idx].y2d;
-                    if (max_y == -1 || vertices[vertex_idx].y2d > max_y) max_y = vertices[vertex_idx].y2d;
-                }
-                
-                // Define bounding box
-                poly->polyBBox.h1 = min_x;
-                poly->polyBBox.v1 = min_y;
-                poly->polyBBox.h2 = max_x;
-                poly->polyBBox.v2 = max_y;
-                
-                // Define color (cyclic to vary colors)
-                //SetSolidPenPat((i % 15) + 1);
-
-                // Draw the polygon
-                SetSolidPenPat(14);     // light gray
-                GetPenPat(pat);
-                FillPoly(polyHandle,pat);
-                SetSolidPenPat(7);      // red
-                FramePoly(polyHandle);
-                
-                // Cleanup
-                HUnlock(polyHandle);
-                DisposeHandle(polyHandle);
-                
-                valid_faces_drawn++;
-            } else {
-                // printf("Error: Cannot allocate memory for face %d\n", i + 1);
-                invalid_faces_skipped++;
-            }
-        } else {
-            // printf("Face %d ignored (less than 3 vertices: %d)\n", i + 1, faces[i].vertex_count);
-            invalid_faces_skipped++;
+    
+    // Use global persistent handle to avoid repeated NewHandle/DisposeHandle
+    // Each call allocates fresh if needed, but reuses same handle block
+    if (globalPolyHandle == NULL) {
+        int max_polySize = 2 + 8 + (4 * 4);  // Max for quad (4 vertices)
+        globalPolyHandle = NewHandle((long)max_polySize, userid(), 0xC014, 0L);
+        if (globalPolyHandle == NULL) {
+            printf("Error: Unable to allocate global polygon handle\n");
+            return;
         }
     }
     
-    // printf("=== RENDERING SUMMARY ===\n");
-    // printf("Faces successfully drawn: %d\n", valid_faces_drawn);
-    // printf("Faces ignored/invalid: %d\n", invalid_faces_skipped);
-    // printf("========================\n");
-}
+    polyHandle = globalPolyHandle;
+    
+    // Make sure handle is unlocked before locking
+    if (poly_handle_locked) {
+        HUnlock(polyHandle);
+        poly_handle_locked = 0;
+    }
+    HLock(polyHandle);
+    poly_handle_locked = 1;
 
+    SetPenMode(0);
+    // printf("\nDrawing polygons on screen:\n");
+    FILE *face_log = NULL;  // Disabled face.log to save time
+    // FILE *face_log = fopen("face.log", "w"); // Log file for face coordinates
+    // if (!face_log) {
+    //     printf("Erreur : impossible de créer ou ouvrir face.log\n");
+    //     keypress();
+    // }
+    
+    // Use sorted_face_indices to draw in correct depth order
+    // Draw ALL faces - painter's algorithm handles occlusion
+    int start_face = 0;
+    int max_faces_to_draw = face_count;
+    
+    for (i = start_face; i < start_face + max_faces_to_draw; i++) {
+        int face_id = faces->sorted_face_indices[i];
+        if (faces->display_flag[face_id] == 0) continue;
+        if (faces->vertex_count[face_id] >= 3) {
+            int offset = faces->vertex_indices_ptr[face_id];
+            if (face_log) {
+                fprintf(face_log, "Face %d:\n", face_id);
+                for (j = 0; j < faces->vertex_count[face_id]; j++) {
+                    int vertex_idx = faces->vertex_indices_buffer[offset + j] - 1;
+                    // Check for valid vertex index
+                    if (vertex_idx >= 0 && vertex_idx < vtx->vertex_count) {
+                        fprintf(face_log, "  Vertex %d: x2d=%d y2d=%d xo=%.4f yo=%.4f zo=%.4f\n",
+                            vertex_idx,
+                            vtx->x2d[vertex_idx],
+                            vtx->y2d[vertex_idx],
+                            FIXED_TO_FLOAT(vtx->xo[vertex_idx]),
+                            FIXED_TO_FLOAT(vtx->yo[vertex_idx]),
+                            FIXED_TO_FLOAT(vtx->zo[vertex_idx]));
+                    } else {
+                        fprintf(face_log, "  Vertex (invalid index): %d\n", faces->vertex_indices_buffer[offset + j]);
+                    }
+                }
+            }
+            // Calculate polySize for this specific face
+            int polySize = 2 + 8 + (faces->vertex_count[face_id] * 4);
+            poly = (DynamicPolygon *)*polyHandle;
+            poly->polySize = polySize;
+            min_x = max_x = min_y = max_y = -1;
+            for (j = 0; j < faces->vertex_count[face_id]; j++) {
+                int vertex_idx = faces->vertex_indices_buffer[offset + j] - 1;
+                // Only draw valid vertices
+                if (vertex_idx >= 0 && vertex_idx < vtx->vertex_count) {
+                    poly->polyPoints[j].h = mode / 320 * vtx->x2d[vertex_idx];
+                    poly->polyPoints[j].v = vtx->y2d[vertex_idx];
+                    if (min_x == -1 || vtx->x2d[vertex_idx] < min_x) min_x = vtx->x2d[vertex_idx];
+                    if (max_x == -1 || vtx->x2d[vertex_idx] > max_x) max_x = vtx->x2d[vertex_idx];
+                    if (min_y == -1 || vtx->y2d[vertex_idx] < min_y) min_y = vtx->y2d[vertex_idx];
+                    if (max_y == -1 || vtx->y2d[vertex_idx] > max_y) max_y = vtx->y2d[vertex_idx];
+                }
+            }
+            poly->polyBBox.h1 = min_x;
+            poly->polyBBox.v1 = min_y;
+            poly->polyBBox.h2 = max_x;
+            poly->polyBBox.v2 = max_y;
+            SetSolidPenPat(14);
+            GetPenPat(pat);
+            FillPoly(polyHandle, pat);
+            SetSolidPenPat(7);
+            FramePoly(polyHandle);
+            valid_faces_drawn++;
+        } else {
+            invalid_faces_skipped++;
+        }
+    }
+    if (face_log) fclose(face_log);
+    
+    // Cleanup: unlock handle but keep it allocated for next frame
+    if (poly_handle_locked) {
+        HUnlock(polyHandle);
+        poly_handle_locked = 0;
+    }
+}
 /**
  * DEBUG DATA SAVE
  * ===============
@@ -1792,88 +1946,71 @@ void drawPolygons(Vertex3D* vertices, Face3D* faces, int face_count, int vertex_
 void saveDebugData(Model3D* model, const char* debug_filename) {
     FILE *debug_file;
     int i, j;
-    
+    int triangle_count = 0, quad_count = 0, other_count = 0;
+    VertexArrays3D* vtx = &model->vertices;
     // Open debug file for writing
     debug_file = fopen(debug_filename, "w");
     if (debug_file == NULL) {
         printf("Error: Unable to create debug file '%s'\n", debug_filename);
         return;
     }
-    
-    // printf("\n=== DEBUG SAVE ===\n");
-    // printf("Writing to: %s\n", debug_filename);
-    
-    // File header
-    fprintf(debug_file, "=== 3D MODEL DEBUG DATA ===\n");
-    fprintf(debug_file, "Generation date: %s", __DATE__);
-    fprintf(debug_file, "\n\n");
-    
-    // General statistics
-    fprintf(debug_file, "=== STATISTICS ===\n");
-    fprintf(debug_file, "Loaded vertices: %d\n", model->vertex_count);
-    fprintf(debug_file, "Loaded faces: %d\n", model->face_count);
-    fprintf(debug_file, "\n");
-    
-    // Face analysis by vertex count
-    int triangle_count = 0, quad_count = 0, other_count = 0;
-    for (i = 0; i < model->face_count; i++) {
-        if (model->faces[i].vertex_count == 3) triangle_count++;
-        else if (model->faces[i].vertex_count == 4) quad_count++;
+    // Face statistics
+    for (i = 0; i < model->faces.face_count; i++) {
+        if (model->faces.vertex_count[i] == 3) triangle_count++;
+        else if (model->faces.vertex_count[i] == 4) quad_count++;
         else other_count++;
     }
     fprintf(debug_file, "Triangles detected: %d\n", triangle_count);
     fprintf(debug_file, "Quadrilaterals detected: %d\n", quad_count);
     fprintf(debug_file, "Other polygons: %d\n", other_count);
     fprintf(debug_file, "\n");
-    
     // Complete vertex list
     fprintf(debug_file, "=== VERTICES ===\n");
     fprintf(debug_file, "Format: Index | X3D Y3D Z3D | X2D Y2D\n");
     fprintf(debug_file, "--------------------------------------\n");
-    for (i = 0; i < model->vertex_count; i++) {
-        fprintf(debug_file, "V%03d | %8.3f %8.3f %8.3f | %4d %4d\n", 
+    for (i = 0; i < vtx->vertex_count; i++) {
+        fprintf(debug_file, "V%03d | %8.3f %8.3f %8.3f | %4d %4d\n",
                 i + 1,
-                model->vertices[i].x, model->vertices[i].y, model->vertices[i].z,
-                model->vertices[i].x2d, model->vertices[i].y2d);
+                FIXED_TO_FLOAT(vtx->x[i]), FIXED_TO_FLOAT(vtx->y[i]), FIXED_TO_FLOAT(vtx->z[i]),
+                vtx->x2d[i], vtx->y2d[i]);
     }
     fprintf(debug_file, "\n");
-    
     // Complete face list
     fprintf(debug_file, "=== FACES ===\n");
-    for (i = 0; i < model->face_count; i++) {
-        fprintf(debug_file, "Face F%03d (%d vertices):\n", i + 1, model->faces[i].vertex_count);
+    for (i = 0; i < model->faces.face_count; i++) {
+        fprintf(debug_file, "Face F%03d (%d vertices):\n", i + 1, model->faces.vertex_count[i]);
         fprintf(debug_file, "  Indices: ");
-        for (j = 0; j < model->faces[i].vertex_count; j++) {
-            fprintf(debug_file, "V%d", model->faces[i].vertex_indices[j]);
-            if (j < model->faces[i].vertex_count - 1) fprintf(debug_file, ", ");
+        int offset = model->faces.vertex_indices_ptr[i];
+        for (j = 0; j < model->faces.vertex_count[i]; j++) {
+            fprintf(debug_file, "V%d", model->faces.vertex_indices_buffer[offset + j]);
+            if (j < model->faces.vertex_count[i] - 1) fprintf(debug_file, ", ");
         }
         fprintf(debug_file, "\n");
-        
         // 3D and 2D coordinates of each vertex of the face
         fprintf(debug_file, "  Coordinates:\n");
-        for (j = 0; j < model->faces[i].vertex_count; j++) {
-            int vertex_idx = model->faces[i].vertex_indices[j] - 1; // Convert base-1 to base-0
-            if (vertex_idx >= 0 && vertex_idx < model->vertex_count) {
+        for (j = 0; j < model->faces.vertex_count[i]; j++) {
+            int vertex_idx = model->faces.vertex_indices_buffer[offset + j] - 1; // Convert base-1 to base-0
+            if (vertex_idx >= 0 && vertex_idx < vtx->vertex_count) {
                 fprintf(debug_file, "    V%d: 3D(%.3f, %.3f, %.3f) -> 2D(%d, %d)\n",
-                        model->faces[i].vertex_indices[j],
-                        model->vertices[vertex_idx].x, model->vertices[vertex_idx].y, model->vertices[vertex_idx].z,
-                        model->vertices[vertex_idx].x2d, model->vertices[vertex_idx].y2d);
+                        model->faces.vertex_indices_buffer[offset + j],
+                        FIXED_TO_FLOAT(vtx->x[vertex_idx]), FIXED_TO_FLOAT(vtx->y[vertex_idx]), FIXED_TO_FLOAT(vtx->z[vertex_idx]),
+                        vtx->x2d[vertex_idx], vtx->y2d[vertex_idx]);
             } else {
-                fprintf(debug_file, "    V%d: ERROR - Index out of bounds!\n", model->faces[i].vertex_indices[j]);
+                fprintf(debug_file, "    V%d: ERROR - Index out of bounds!\n", model->faces.vertex_indices_buffer[offset + j]);
             }
         }
         fprintf(debug_file, "\n");
     }
-    
     // Integrity check
     fprintf(debug_file, "=== INTEGRITY CHECK ===\n");
     int errors = 0;
-    for (i = 0; i < model->face_count; i++) {
-        for (j = 0; j < model->faces[i].vertex_count; j++) {
-            int vertex_idx = model->faces[i].vertex_indices[j] - 1;
-            if (vertex_idx < 0 || vertex_idx >= model->vertex_count) {
+    for (i = 0; i < model->faces.face_count; i++) {
+        int offset = model->faces.vertex_indices_ptr[i];
+        for (j = 0; j < model->faces.vertex_count[i]; j++) {
+            int vertex_idx = model->faces.vertex_indices_buffer[offset + j] - 1;
+            if (vertex_idx < 0 || vertex_idx >= vtx->vertex_count) {
                 fprintf(debug_file, "ERROR: Face F%d references non-existent vertex V%d (index %d out of bounds [1-%d])\n",
-                        i + 1, model->faces[i].vertex_indices[j], vertex_idx + 1, model->vertex_count);
+                        i + 1, model->faces.vertex_indices_buffer[offset + j], vertex_idx + 1, vtx->vertex_count);
                 errors++;
             }
         }
@@ -1883,17 +2020,14 @@ void saveDebugData(Model3D* model, const char* debug_filename) {
     } else {
         fprintf(debug_file, "TOTAL: %d errors detected!\n", errors);
     }
-    
     // Close file
     fclose(debug_file);
-    // printf("Debug sauvegarde avec succes!\n");
-    // printf("========================\n");
 }
 
 
 void DoColor() {
         Rect r;
-        unsigned char pstr[4];  // Pascal string: [length][characters...]
+        unsigned char pstr[4];  // Pascal string: [length][characters...]]
 
         SetRect (&r, 0, 1, mode / 320 *10, 11);
         for (int i = 0; i < 16; i++) {
@@ -1949,6 +2083,9 @@ newmodel:
         keypress();
         return 1;
     }
+    // Toujours verrouiller le handle avant d'accéder au pointeur !
+   //  test_fill_vertices(&model->vertices); // Uncomment to test memory layout
+    // No global HLock/HUnlock needed; handled per array in allocation logic
     
     // Ask for filename
     printf("Enter the filename to read: ");
@@ -1974,7 +2111,7 @@ newmodel:
     bigloop:
     // Process model with parameters - OPTIMIZED VERSION
     printf("Processing model...\n");
-    processModelFast(model, &params);
+    processModelFast(model, &params, filename);
     
 #if ENABLE_DEBUG_SAVE
     // Debug save (WARNING: very slow!)
@@ -1991,11 +2128,11 @@ newmodel:
         int key = 0;
         char input[50];
         
-        if (model->face_count > 0) {
+        if (model->faces.face_count > 0) {
             // Initialize QuickDraw
             startgraph(mode);
             // Draw 3D object
-            drawPolygons(model->vertices, model->faces, model->face_count, model->vertex_count);
+            drawPolygons(model, model->faces.vertex_count, model->faces.face_count, model->vertices.vertex_count);
             // display available colors
             if (colorpalette == 1) { 
                 DoColor(); 
@@ -2015,6 +2152,11 @@ newmodel:
         }
 
     endgraph();        // Close QuickDraw
+    
+    // CRITICAL: Force cleanup of QuickDraw resources to prevent memory leak
+    // Note: InitGraf not available, so we rely on endgraph() cleanup
+    // Resource accumulation from FillPoly/FramePoly is inherent to QuickDraw
+    
     }  // End of if (model->face_count > 0)
     
     DoText();           // Show text screen
@@ -2034,7 +2176,7 @@ newmodel:
             printf(" Model information and parameters\n");
             printf("===================================\n");
             printf("Model: %s\n", filename);
-            printf("Vertices: %d, Faces: %d\n", model->vertex_count, model->face_count);
+            printf("Vertices: %d, Faces: %d\n", model->vertices.vertex_count, model->faces.face_count);
             printf("Observer Parameters:\n");
             printf("    Distance: %.2f\n", FIXED_TO_FLOAT(params.distance));
             printf("    Horizontal Angle: %.1f\n", FIXED_TO_FLOAT(params.angle_h));
@@ -2123,6 +2265,72 @@ newmodel:
 
     end:
     // Cleanup and exit
+    
+    // Dispose of the global polygon handle if it was allocated
+    if (globalPolyHandle != NULL) {
+        if (poly_handle_locked) {
+            HUnlock(globalPolyHandle);
+        }
+        DisposeHandle(globalPolyHandle);
+        globalPolyHandle = NULL;
+    }
+    
     destroyModel3D(model);
     return 0;
+}
+
+// Fonction de test pour remplir les tableaux parallèles de vertices
+void test_fill_vertices(VertexArrays3D *vtx) {
+    printf("[TEST] Remplissage de %d sommets (parallel arrays)...\n", vtx->vertex_count);
+    unsigned long addr_x    = (unsigned long)vtx->x;
+    unsigned long addr_y    = (unsigned long)vtx->y;
+    unsigned long addr_z    = (unsigned long)vtx->z;
+    unsigned long addr_xo   = (unsigned long)vtx->xo;
+    unsigned long addr_yo   = (unsigned long)vtx->yo;
+    unsigned long addr_zo   = (unsigned long)vtx->zo;
+    unsigned long addr_x2d  = (unsigned long)vtx->x2d;
+    unsigned long addr_y2d  = (unsigned long)vtx->y2d;
+
+    printf("[PTRS] x    = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_x, (unsigned int)((addr_x>>16)&0xFF), (unsigned int)(addr_x&0xFFFF));
+    printf("[PTRS] y    = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_y, (unsigned int)((addr_y>>16)&0xFF), (unsigned int)(addr_y&0xFFFF));
+    printf("[PTRS] z    = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_z, (unsigned int)((addr_z>>16)&0xFF), (unsigned int)(addr_z&0xFFFF));
+    printf("[PTRS] xo   = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_xo, (unsigned int)((addr_xo>>16)&0xFF), (unsigned int)(addr_xo&0xFFFF));
+    printf("[PTRS] yo   = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_yo, (unsigned int)((addr_yo>>16)&0xFF), (unsigned int)(addr_yo&0xFFFF));
+    printf("[PTRS] zo   = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_zo, (unsigned int)((addr_zo>>16)&0xFF), (unsigned int)(addr_zo&0xFFFF));
+    printf("[PTRS] x2d  = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_x2d, (unsigned int)((addr_x2d>>16)&0xFF), (unsigned int)(addr_x2d&0xFFFF));
+    printf("[PTRS] y2d  = 0x%06lX (bank=$%02X, offset=$%04X)\n", addr_y2d, (unsigned int)((addr_y2d>>16)&0xFF), (unsigned int)(addr_y2d&0xFFFF));
+    keypress();
+
+    for (int i = 0; i < vtx->vertex_count; i++) {
+        // Affiche l'adresse longue (24 bits) de l'écriture (bank:offset) pour chaque array
+        unsigned long addr_x = (unsigned long)&vtx->x[i];
+        unsigned long addr_y = (unsigned long)&vtx->y[i];
+        unsigned long addr_z = (unsigned long)&vtx->z[i];
+        unsigned int bank_x = (addr_x >> 16) & 0xFF;
+        unsigned int offset_x = addr_x & 0xFFFF;
+        // printf("i=%d, x=0x%06lX (bank=$%02X, offset=$%04X)", i, addr_x, bank_x, offset_x);
+        unsigned int bank_y = (addr_y >> 16) & 0xFF;
+        unsigned int offset_y = addr_y & 0xFFFF;
+        // printf(", y=0x%06lX (bank=$%02X, offset=$%04X)", addr_y, bank_y, offset_y);
+        unsigned int bank_z = (addr_z >> 16) & 0xFF;
+        unsigned int offset_z = addr_z & 0xFFFF;
+        // printf(", z=0x%06lX (bank=$%02X, offset=$%04X)\n", addr_z, bank_z, offset_z);
+        // DEBUG: log to file
+        // FILE *logfile = fopen("vertexlog.txt", "a");
+        // if (logfile) {
+        //     fprintf(logfile, "i=%d, x=0x%06lX (bank=$%02X, offset=$%04X), y=0x%06lX (bank=$%02X, offset=$%04X), z=0x%06lX (bank=$%02X, offset=$%04X)\n",
+        //         i, addr_x, bank_x, offset_x, addr_y, bank_y, offset_y, addr_z, bank_z, offset_z);
+        //     fflush(logfile);
+        //     fclose(logfile);
+        // }
+        vtx->x[i] = 1;
+        vtx->y[i] = 2;
+        vtx->z[i] = 3;
+        vtx->xo[i] = 0;
+        vtx->yo[i] = 0;
+        vtx->zo[i] = 0;
+        vtx->x2d[i] = 0;
+        vtx->y2d[i] = 0;
+    }
+    printf("[TEST] Remplissage de %d sommets termine.\n", vtx->vertex_count);
 }

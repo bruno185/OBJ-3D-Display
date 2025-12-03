@@ -1,0 +1,26 @@
+# Hexagonal Pyramid with multi-vertex faces
+# A pyramid with a hexagonal base (6 vertices per face for the base)
+# and triangular sides
+
+# Vertices for hexagonal base (centered at origin)
+v 1.0 0.0 0.0
+v 0.5 0.866 0.0
+v -0.5 0.866 0.0
+v -1.0 0.0 0.0
+v -0.5 -0.866 0.0
+v 0.5 -0.866 0.0
+
+# Apex of pyramid
+v 0.0 0.0 2.0
+
+# Faces
+# Hexagonal base (6 vertices in one face) - tests MAX_FACE_VERTICES
+f 1 2 3 4 5 6
+
+# Triangular side faces
+f 1 7 2
+f 2 7 3
+f 3 7 4
+f 4 7 5
+f 5 7 6
+f 6 7 1

@@ -1,0 +1,146 @@
+# Complex 3D object with varied face sizes
+# Tests support for faces with 3-6 vertices
+# Large model with multiple geometric shapes
+
+# ===== CUBE (8 vertices, 6 quad faces) =====
+v 2.0 2.0 2.0
+v 2.0 2.0 -2.0
+v 2.0 -2.0 2.0
+v 2.0 -2.0 -2.0
+v -2.0 2.0 2.0
+v -2.0 2.0 -2.0
+v -2.0 -2.0 2.0
+v -2.0 -2.0 -2.0
+
+f 1 3 4 2
+f 5 6 8 7
+f 1 2 6 5
+f 3 7 8 4
+f 1 5 7 3
+f 2 4 8 6
+
+# ===== OCTAHEDRON (6 vertices, 8 triangular faces) =====
+v 5.0 0.0 0.0
+v -5.0 0.0 0.0
+v 0.0 5.0 0.0
+v 0.0 -5.0 0.0
+v 0.0 0.0 5.0
+v 0.0 0.0 -5.0
+
+f 9 11 13
+f 9 13 12
+f 9 12 14
+f 9 14 11
+f 10 13 11
+f 10 14 12
+f 10 12 13
+f 10 11 14
+
+# ===== PENTAGONAL PYRAMID (6 vertices, 1 pentagonal base + 5 triangular sides) =====
+v -8.0 0.0 0.0
+v -6.0 2.5 0.0
+v -5.0 1.5 0.0
+v -5.0 -1.5 0.0
+v -6.0 -2.5 0.0
+v -6.0 0.0 3.0
+
+# Pentagonal base (5 vertices in one face)
+f 15 16 17 18 19
+
+# Triangular sides
+f 15 20 16
+f 16 20 17
+f 17 20 18
+f 18 20 19
+f 19 20 15
+
+# ===== HEXAGONAL PRISM (12 vertices, 2 hexagonal faces + 6 quad sides) =====
+# Top hexagon
+v 0.0 3.0 5.0
+v 1.0 2.6 5.0
+v 1.0 1.4 5.0
+v 0.0 1.0 5.0
+v -1.0 1.4 5.0
+v -1.0 2.6 5.0
+
+# Bottom hexagon
+v 0.0 3.0 -5.0
+v 1.0 2.6 -5.0
+v 1.0 1.4 -5.0
+v 0.0 1.0 -5.0
+v -1.0 1.4 -5.0
+v -1.0 2.6 -5.0
+
+# Top hexagonal face (6 vertices)
+f 21 22 23 24 25 26
+
+# Bottom hexagonal face (6 vertices)
+f 27 32 31 30 29 28
+
+# Side quad faces
+f 21 27 28 22
+f 22 28 29 23
+f 23 29 30 24
+f 24 30 31 25
+f 25 31 32 26
+f 26 32 27 21
+
+# ===== DOUBLE PYRAMID (2 apexes + 6 base vertices = 8 total) =====
+v 8.0 0.0 -2.0
+v 6.0 2.0 -2.0
+v 4.0 1.5 -2.0
+v 4.0 -1.5 -2.0
+v 6.0 -2.0 -2.0
+v 8.0 -3.0 -2.0
+v 8.0 0.0 2.0
+v 8.0 0.0 -6.0
+
+# Top pyramid triangles
+f 33 39 34
+f 34 39 35
+f 35 39 36
+f 36 39 37
+f 37 39 38
+f 38 39 33
+
+# Bottom pyramid triangles
+f 33 34 40
+f 34 35 40
+f 35 36 40
+f 36 37 40
+f 37 38 40
+f 38 33 40
+
+# ===== COMPLEX HEXAGONAL BASE OBJECT (Pentagon top + Hexagon bottom) =====
+# Top pentagon (5 vertices)
+v -10.0 0.0 0.0
+v -9.0 1.5 0.0
+v -8.0 0.9 0.0
+v -8.0 -0.9 0.0
+v -9.0 -1.5 0.0
+
+# Bottom hexagon (6 vertices)
+v -10.0 0.0 -3.0
+v -9.0 1.5 -3.0
+v -8.5 2.0 -3.0
+v -8.0 0.9 -3.0
+v -8.0 -0.9 -3.0
+v -9.0 -1.5 -3.0
+
+# Top pentagon face
+f 41 42 43 44 45
+
+# Bottom hexagon face
+f 46 51 50 49 48 47
+
+# Connecting quad faces
+f 41 46 47 42
+f 42 47 48 43
+f 43 48 49 44
+f 44 49 50 45
+f 45 50 51 41
+
+# Triangular cap on bottom to close hexagon-pentagon mismatch
+f 41 51 46
+
+# Total: ~50 faces, multiple sizes (3-6 vertices)
