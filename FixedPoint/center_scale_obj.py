@@ -8,7 +8,7 @@ import os
 # Larger values = bigger model on screen
 # Typical range: 20-50 for Apple IIGS display
 # Make sure the model fits within Fixed32 limits [-32768, +32767]
-TARGET_SCALE_SIZE = 60.0
+TARGET_SCALE_SIZE = 30.0
 # This section filters OBJ files to keep only essential elements:
 # vertices (v), faces (f), and comments (#)
 # Other lines (textures, normals, etc.) are removed
@@ -109,10 +109,12 @@ def center_and_scale(vertices, target_size=None):
     Center and rescale vertices (pure Python, no numpy)
     
     Steps:
-    1. Calculate the center of mass of the model
-    2. Translate all vertices so the center is at (0, 0, 0)
-    3. Find the largest dimension
-    4. Rescale so the largest dimension = target_size
+    1. Swap X and Z coordinates
+    2. Negate Z coordinate (multiply by -1)
+    3. Calculate the center of mass of the model
+    4. Translate all vertices so the center is at (0, 0, 0)
+    5. Find the largest dimension
+    6. Rescale so the largest dimension = target_size
     
     Parameters:
         vertices: list of vertices [[x, y, z], ...]
@@ -127,20 +129,28 @@ def center_and_scale(vertices, target_size=None):
     if not vertices:
         return vertices
     
+    #
+    # STEP 0: Swap X, Y, Z to reorients the model axes
+    #
+    swapped = [
+        [v[0], v[1], v[2]]  # X'=X, Y'=Y, Z'=Z
+        for v in vertices
+    ]
+    
     # STEP 1: Calculate center of mass
     # Center = average of all vertices
-    n = len(vertices)
+    n = len(swapped)
     center = [
-        sum(v[0] for v in vertices) / n,  # Average of X
-        sum(v[1] for v in vertices) / n,  # Average of Y
-        sum(v[2] for v in vertices) / n   # Average of Z
+        sum(v[0] for v in swapped) / n,  # Average of X
+        sum(v[1] for v in swapped) / n,  # Average of Y
+        sum(v[2] for v in swapped) / n   # Average of Z
     ]
     
     # STEP 2: Translation to center
     # Subtract the center from each vertex
     centered = [
         [v[0] - center[0], v[1] - center[1], v[2] - center[2]]
-        for v in vertices
+        for v in swapped
     ]
     
     # STEP 3: Find min/max bounds after centering

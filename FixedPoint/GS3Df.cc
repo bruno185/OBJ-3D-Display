@@ -1369,11 +1369,7 @@ int readVertices(const char* filename, VertexArrays3D* vtx, int max_vertices) {
                     vtx->z[vertex_count] = FLOAT_TO_FIXED(z);
                     vertex_count++;
                     if (vertex_count % 10 == 0) printf("..");
-                //     FILE *vlog = fopen("vertexlog.txt", "a");
-                //     if (vlog) {
-                //         fprintf(vlog, "vertex_count=%d\n", vertex_count);
-                //         fclose(vlog);
-                //}
+
                 } else {
                     printf("[\nDEBUG] readVertices: sscanf failed at line %d: %s\n", line_number, line);
                     keypress();
@@ -2314,15 +2310,7 @@ void test_fill_vertices(VertexArrays3D *vtx) {
         // printf(", y=0x%06lX (bank=$%02X, offset=$%04X)", addr_y, bank_y, offset_y);
         unsigned int bank_z = (addr_z >> 16) & 0xFF;
         unsigned int offset_z = addr_z & 0xFFFF;
-        // printf(", z=0x%06lX (bank=$%02X, offset=$%04X)\n", addr_z, bank_z, offset_z);
-        // DEBUG: log to file
-        // FILE *logfile = fopen("vertexlog.txt", "a");
-        // if (logfile) {
-        //     fprintf(logfile, "i=%d, x=0x%06lX (bank=$%02X, offset=$%04X), y=0x%06lX (bank=$%02X, offset=$%04X), z=0x%06lX (bank=$%02X, offset=$%04X)\n",
-        //         i, addr_x, bank_x, offset_x, addr_y, bank_y, offset_y, addr_z, bank_z, offset_z);
-        //     fflush(logfile);
-        //     fclose(logfile);
-        // }
+
         vtx->x[i] = 1;
         vtx->y[i] = 2;
         vtx->z[i] = 3;
