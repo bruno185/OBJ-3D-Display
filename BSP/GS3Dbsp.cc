@@ -610,9 +610,11 @@ void DoColor(void) {
     // Stub : rien à faire
 }
 
-void DoText(void) {
-    // Stub : rien à faire
+void DoText() {
+        shroff();
+        putchar((char) 12); // Clear screen    
 }
+
 
 // ============================================================================
 //  MAIN BSP

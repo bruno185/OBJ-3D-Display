@@ -14,7 +14,7 @@ from pathlib import Path
 #           Configuration Variables
 # ===============================================
 # Change these variables to your own configuration
-PRG = "GS3Dbsp"  # Program name without extension
+PRG = "GS3Df"  # Program name without extension
 lang = ".cc"
 AppleDiskPath = "F:\\Bruno\\Dev\\AppleWin\\GS\\activeGS\\Live.Install.po"
 ProdosDir = "/LIVE.INSTALL/"
